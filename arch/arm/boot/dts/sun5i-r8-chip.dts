@@ -181,8 +181,9 @@
 		cy,core {
 			cy,name = "cyttsp5_core";
 
-			cy,irq_gpio = <38>;
-			cy,rst_gpio = <37>;
+			cy,irq_gpio = <205>;
+			cy,rst_gpio = <138>;
+			cy,boot_mode_gpio = <139>;
 			cy,hid_desc_register = <1>;
 			/*CY_CORE_FLAG_RESTORE_PARAMETERS */
 			cy,flags = <4>;
