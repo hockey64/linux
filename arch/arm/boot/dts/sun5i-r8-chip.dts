@@ -135,38 +135,6 @@
 		 */
 		interrupts = <0>;
 	};
-};
-
-#include "axp209.dtsi"
-
-/*
- * i2c1 is routed to the external pins and doesn't have any device
- * attached to it on the C.H.I.P itself.
- */
-&i2c1 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&i2c1_pins_a>;
-	status = "okay";
-};
-
-&i2c2 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&i2c2_pins_a>;
-	status = "okay";
-
-	xio: gpio@38 {
-		compatible = "nxp,pcf8574a";
-		reg = <0x38>;
-
-		gpio-controller;
-		#gpio-cells = <2>;
-
-		interrupt-parent = <&pio>;
-		interrupts = <6 0 IRQ_TYPE_EDGE_FALLING>;
-		interrupt-controller;
-		#interrupt-cells = <2>;
-	};
-
 	clock-frequency = <400000>;
 
 	tsc@24 {
@@ -248,6 +216,37 @@
 				cy,inp_dev_name = "cyttsp5_btn";
 			};
 		};
+	};
+};
+
+#include "axp209.dtsi"
+
+/*
+ * i2c1 is routed to the external pins and doesn't have any device
+ * attached to it on the C.H.I.P itself.
+ */
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins_a>;
+	status = "okay";
+};
+
+&i2c2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2_pins_a>;
+	status = "okay";
+
+	xio: gpio@38 {
+		compatible = "nxp,pcf8574a";
+		reg = <0x38>;
+
+		gpio-controller;
+		#gpio-cells = <2>;
+
+		interrupt-parent = <&pio>;
+		interrupts = <6 0 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
 	};
 };
 
