@@ -142,11 +142,11 @@
 
                 /* GPIO 38, high-to-low edge triggered */
                 interrupts = <6 2>;
-                interrupt-parent = <&gpio2>;
-                cy,adapter_id = "cyttsp5_i2c_adapter";
+                interrupt-parent = <&pio>;
+                cy,adapter_id = "pt_i2c_adapter";
 
                 cy,core {
-                        cy,name = "cyttsp5_core";
+                        cy,name = "pt_core";
 
                         cy,irq_gpio = <205>;
                         cy,rst_gpio = <138>;
