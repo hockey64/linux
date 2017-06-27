@@ -31,6 +31,8 @@
 
 /* This section is needed for the PtSBC in how it handles I2C and IRQs */
 #ifdef PT_PTSBC_SUPPORT
+#include <linux/i2c.h>
+#include <linux/gpio.h>
 #if 0
 #include <mach/irqs.h>
 #include <mach/system.h>
