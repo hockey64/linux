@@ -134,13 +134,13 @@
                 compatible = "cy,cyttsp5_i2c_adapter";
                 reg = <0x24>;
 
-                /* GPIO 38, high-to-low edge triggered */
-                interrupts = <6 2>;
+                /* GPIO 205 (205-32=173), high-to-low edge triggered */
+                interrupts = <0 173 2>;
                 interrupt-parent = <&pio>;
                 cy,adapter_id = "cyttsp_i2c_adapter";
 
                 cy,core {
-                        cy,name = "cyttsp_core";
+                        cy,name = "cyttsp5_core";
 
                         cy,irq_gpio = <205>;
                         cy,rst_gpio = <138>;
