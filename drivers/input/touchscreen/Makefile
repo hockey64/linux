@@ -125,17 +125,17 @@ CFLAGS_cyttsp5_platform.o += -DPT_PTSBC_SUPPORT
 
 # Enable TDDI support for the TC33xx product family
 CFLAGS_cyttsp5_core.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_i2c.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_spi.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_mta.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_mtb.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_mt_common.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_btn.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_device_access.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_loader.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_debug.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_devtree.o += -PT_TDDI_SUPPORT
-CFLAGS_cyttsp5_platform.o += -PT_TDDI_SUPPORT
+CFLAGS_cyttsp5_i2c.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_spi.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_mta.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_mtb.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_mt_common.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_btn.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_device_access.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_loader.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_debug.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_devtree.o += -DPT_TDDI_SUPPORT
+CFLAGS_cyttsp5_platform.o += -DPT_TDDI_SUPPORT
 
 ifeq ($(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_DEBUG),y)
 CFLAGS_cyttsp5_core.o += -DDEBUG
