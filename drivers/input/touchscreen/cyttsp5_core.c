@@ -28,12 +28,11 @@
 
 #include "cyttsp5_regs.h"
 #include <linux/kthread.h>
+#include <linux/i2c.h>
+#include <linux/gpio.h>
 
 /* This section is needed for the PtSBC in how it handles I2C and IRQs */
 #ifdef PT_PTSBC_SUPPORT
-#include <linux/i2c.h>
-#include <linux/gpio.h>
-#if 0
 #include <mach/irqs.h>
 #include <mach/system.h>
 #include <mach/hardware.h>
@@ -41,7 +40,6 @@
 #include <mach/gpio.h>
 #include <linux/init-input.h>
 #include <mach/i2c.h>
-#endif
 #define CY_CORE_PROBE_STARTUP_DELAY_MS		500
 static struct workqueue_struct *parade_wq;
 #endif /* --- PT_PTSBC_SUPPORT --- */
