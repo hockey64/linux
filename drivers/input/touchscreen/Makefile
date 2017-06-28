@@ -110,18 +110,18 @@ obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_DEVICE_ACCESS)          += cyttsp5_devi
 obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_TEST_DEVICE_ACCESS_API) += cyttsp5_test_device_access_api.o
 
 # Enable PTSBC support for all Parade Single Board Computer dev platforms
-CFLAGS_cyttsp5_core.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_i2c.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_spi.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_mta.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_mtb.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_mt_common.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_btn.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_device_access.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_loader.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_debug.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_devtree.o += -DPT_PTSBC_SUPPORT
-CFLAGS_cyttsp5_platform.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_core.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_i2c.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_spi.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_mta.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_mtb.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_mt_common.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_btn.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_device_access.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_loader.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_debug.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_devtree.o += -DPT_PTSBC_SUPPORT
+#CFLAGS_cyttsp5_platform.o += -DPT_PTSBC_SUPPORT
 
 # Enable TDDI support for the TC33xx product family
 CFLAGS_cyttsp5_core.o += -DPT_TDDI_SUPPORT
