@@ -135,7 +135,7 @@
                 reg = <0x24>;
 
                 /* GPIO 205, 8 = active low level-sensitive */
-                interrupts = <1 8>;
+                interrupts = <173 8>;
                 interrupt-parent = <&pio>;
                 cy,adapter_id = "cyttsp5_i2c_adapter";
 
