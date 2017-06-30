@@ -130,6 +130,12 @@
 	status = "okay";
         clock-frequency = <400000>;
 
+	pcf8563@51 {
+		/* nxp pcf8563 rtc */
+		compatible = "nxp,pcf8563";
+		reg = <0x51>;
+	};
+
         tsc@24 {
                 compatible = "cy,cyttsp5_i2c_adapter";
                 reg = <0x24>;
