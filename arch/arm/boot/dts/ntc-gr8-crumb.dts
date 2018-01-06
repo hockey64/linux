@@ -137,26 +137,26 @@
 	};
 
         tsc@24 {
-                compatible = "cy,cyttsp5_i2c_adapter";
+                compatible = "pt,pt_i2c_adapter";
                 reg = <0x24>;
 
                 /* GPIO 205, 8 = active low level-sensitive */
                 interrupts = <173 8>;
                 interrupt-parent = <&pio>;
-                cy,adapter_id = "cyttsp5_i2c_adapter";
+                pt,adapter_id = "pt_i2c_adapter";
 
-                cy,core {
-                        cy,name = "cyttsp5_core";
+                pt,core {
+                        pt,name = "pt_core";
 
-                        cy,irq_gpio = <205>;
-                        cy,rst_gpio = <138>;
-                        cy,boot_mode_gpio = <139>;
-                        cy,hid_desc_register = <1>;
+                        pt,irq_gpio = <205>;
+                        pt,rst_gpio = <138>;
+                        pt,runfw_gpio = <139>;
+                        pt,hid_desc_register = <1>;
                         /*CY_CORE_FLAG_RESTORE_PARAMETERS */
-                        cy,flags = <4>;
+                        pt,flags = <4>;
                         /* CY_CORE_EWG_NONE */
-                        cy,easy_wakeup_gesture = <0>;
-                        cy,btn_keys = <172 /* KEY_HOMEPAGE */
+                        pt,easy_wakeup_gesture = <0>;
+                        pt,btn_keys = <172 /* KEY_HOMEPAGE */
                                            /* previously was KEY_HOME, new Android ver use KEY_HOMEPAGE */
                                        139 /* KEY_MENU */
                                        158 /* KEY_BACK */
@@ -165,15 +165,15 @@
                                        115 /* KEY_VOLUMEUP */
                                        212 /* KEY_CAMERA */
                                        116>; /* KEY_POWER */
-                        cy,btn_keys-tag = <0>;
+                        pt,btn_keys-tag = <0>;
 
-                        cy,mt {
-                                cy,name = "cyttsp5_mt";
+                        pt,mt {
+                                pt,name = "pt_mt";
 
-                                cy,inp_dev_name = "cyttsp5_mt";
+                                pt,inp_dev_name = "pt_mt";
                                 /* CY_MT_FLAG_FLIP | CY_MT_FLAG_INV_X | CY_MT_FLAG_INV_Y */
-                                cy,flags = <0x38>;
-                                cy,abs =
+                                pt,flags = <0x38>;
+                                pt,abs =
                                         /* ABS_MT_POSITION_X, CY_ABS_MIN_X, CY_ABS_MAX_X, 0, 0 */
                                         <0x35 0 880 0 0
                                         /* ABS_MT_POSITION_Y, CY_ABS_MIN_Y, CY_ABS_MAX_Y, 0, 0 */
@@ -195,10 +195,10 @@
                                         /* ABS_MT_DISTANCE, 0, 255, 0, 0 */
                                         0x3b 0 255 0 0>;
 
-                                cy,vkeys_x = <720>;
-                                cy,vkeys_y = <1280>;
+                                pt,vkeys_x = <720>;
+                                pt,vkeys_y = <1280>;
 
-                                cy,virtual_keys = /* KeyCode CenterX CenterY Width Height */
+                                pt,virtual_keys = /* KeyCode CenterX CenterY Width Height */
                                         /* KEY_BACK */
                                         <158 1360 90 160 180
                                         /* KEY_MENU */
@@ -209,10 +209,10 @@
                                         217 1360 630 160 180>;
                         };
 
-                        cy,btn {
-                                cy,name = "cyttsp5_btn";
+                        pt,btn {
+                                pt,name = "pt_btn";
 
-                                cy,inp_dev_name = "cyttsp5_btn";
+                                pt,inp_dev_name = "pt_btn";
                         };
                 };
         };
