@@ -92,65 +92,67 @@ obj-$(CONFIG_TOUCHSCREEN_ZFORCE)	+= zforce_ts.o
 obj-$(CONFIG_TOUCHSCREEN_COLIBRI_VF50)	+= colibri-vf50-ts.o
 obj-$(CONFIG_TOUCHSCREEN_ROHM_BU21023)	+= rohm_bu21023.o
 
-obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5)      += cyttsp5.o
-cyttsp5-y := cyttsp5_core.o cyttsp5_mt_common.o
-cyttsp5-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_MT_A) += cyttsp5_mta.o
-cyttsp5-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_MT_B) += cyttsp5_mtb.o
-cyttsp5-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_BUTTON) += cyttsp5_btn.o
-obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_DEVICETREE_SUPPORT) += cyttsp5_devtree.o
-ifdef CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5
-  obj-y += cyttsp5_platform.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE)      += pt.o
+obj-y := pt_core.o pt_mt_common.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE_MT_A) += pt_mta.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE_MT_B) += pt_mtb.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE_BUTTON) += pt_btn.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE_DEVICETREE_SUPPORT) += pt_devtree.o
+ifdef CONFIG_TOUCHSCREEN_PARADE
+  obj-y += pt_platform.o
 endif
-obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_I2C)  += cyttsp5_i2c.o
-obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_SPI)  += cyttsp5_spi.o
-obj-m    += cyttsp5_debug.o
-#obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_DEBUG_MDL)    += cyttsp5_debug.o
-obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_LOADER)       += cyttsp5_loader.o
-obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_DEVICE_ACCESS)          += cyttsp5_device_access.o
-obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_TEST_DEVICE_ACCESS_API) += cyttsp5_test_device_access_api.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE_I2C)  += pt_i2c.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE_SPI)  += pt_spi.o
+obj-m    += pt_debug.o
+#obj-$(CONFIG_TOUCHSCREEN_PARADE_DEBUG_MDL)    += pt_debug.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE_LOADER)       += pt_loader.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE_DEVICE_ACCESS)          += pt_device_access.o
+obj-$(CONFIG_TOUCHSCREEN_PARADE_TEST_DEVICE_ACCESS_API) += pt_test_device_access_api.o
 
 # Enable TDDI support for the TC33xx product family
-CFLAGS_cyttsp5_core.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_i2c.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_spi.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_mta.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_mtb.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_mt_common.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_btn.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_device_access.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_loader.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_debug.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_devtree.o += -DPT_TDDI_SUPPORT
-CFLAGS_cyttsp5_platform.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_core.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_i2c.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_spi.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_mta.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_mtb.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_mt_common.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_btn.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_device_access.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_loader.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_debug.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_devtree.o += -DPT_TDDI_SUPPORT
+CFLAGS_pt_platform.o += -DPT_TDDI_SUPPORT
 
-ifeq ($(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_DEBUG),y)
-CFLAGS_cyttsp5_core.o += -DDEBUG
-CFLAGS_cyttsp5_i2c.o += -DDEBUG
-CFLAGS_cyttsp5_spi.o += -DDEBUG
-CFLAGS_cyttsp5_mta.o += -DDEBUG
-CFLAGS_cyttsp5_mtb.o += -DDEBUG
-CFLAGS_cyttsp5_mt_common.o += -DDEBUG
-CFLAGS_cyttsp5_btn.o += -DDEBUG
-CFLAGS_cyttsp5_proximity.o += -DDEBUG
-CFLAGS_cyttsp5_device_access.o += -DDEBUG
-CFLAGS_cyttsp5_loader.o += -DDEBUG
-CFLAGS_cyttsp5_debug.o += -DDEBUG
-CFLAGS_cyttsp5_devtree.o += -DDEBUG
-CFLAGS_cyttsp5_platform.o += -DDEBUG
+
+
+ifeq ($(CONFIG_TOUCHSCREEN_PARADE_DEBUG),y)
+CFLAGS_pt_core.o += -DDEBUG
+CFLAGS_pt_i2c.o += -DDEBUG
+CFLAGS_pt_spi.o += -DDEBUG
+CFLAGS_pt_mta.o += -DDEBUG
+CFLAGS_pt_mtb.o += -DDEBUG
+CFLAGS_pt_mt_common.o += -DDEBUG
+CFLAGS_pt_btn.o += -DDEBUG
+CFLAGS_pt_proximity.o += -DDEBUG
+CFLAGS_pt_device_access.o += -DDEBUG
+CFLAGS_pt_loader.o += -DDEBUG
+CFLAGS_pt_debug.o += -DDEBUG
+CFLAGS_pt_devtree.o += -DDEBUG
+CFLAGS_pt_platform.o += -DDEBUG
 endif
 
-ifeq ($(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP5_VDEBUG),y)
-CFLAGS_cyttsp5_core.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_i2c.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_spi.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_mta.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_mtb.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_mt_common.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_btn.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_proximity.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_device_access.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_loader.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_debug.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_devtree.o += -DVERBOSE_DEBUG
-CFLAGS_cyttsp5_platform.o += -DVERBOSE_DEBUG
+ifeq ($(CONFIG_TOUCHSCREEN_PARADE_VDEBUG),y)
+CFLAGS_pt_core.o += -DVERBOSE_DEBUG
+CFLAGS_pt_i2c.o += -DVERBOSE_DEBUG
+CFLAGS_pt_spi.o += -DVERBOSE_DEBUG
+CFLAGS_pt_mta.o += -DVERBOSE_DEBUG
+CFLAGS_pt_mtb.o += -DVERBOSE_DEBUG
+CFLAGS_pt_mt_common.o += -DVERBOSE_DEBUG
+CFLAGS_pt_btn.o += -DVERBOSE_DEBUG
+CFLAGS_pt_proximity.o += -DVERBOSE_DEBUG
+CFLAGS_pt_device_access.o += -DVERBOSE_DEBUG
+CFLAGS_pt_loader.o += -DVERBOSE_DEBUG
+CFLAGS_pt_debug.o += -DVERBOSE_DEBUG
+CFLAGS_pt_devtree.o += -DVERBOSE_DEBUG
+CFLAGS_pt_platform.o += -DVERBOSE_DEBUG
 endif
