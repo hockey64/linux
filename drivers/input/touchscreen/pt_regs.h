@@ -76,6 +76,7 @@
 #define PT_FW_FILE_PREFIX	"tt_fw"
 #define PT_FW_FILE_SUFFIX	".bin"
 #define PT_FW_FILE_NAME		"tt_fw.bin"
+#define PT_FW_RAM_FILE_NAME	"tt_fw_ram.bin"
 
 #ifndef TTHE_TUNER_SUPPORT
 #define TTHE_TUNER_SUPPORT
@@ -111,6 +112,7 @@ enum PT_DEBUG_LEVEL {
 	DL_DEBUG	= 4,
 	DL_MAX
 };
+#define PT_INITIAL_DEBUG_LEVEL DL_WARN
 
 /* Startup DUT enum status bitmask */
 enum PT_STARTUP_STATUS {
@@ -127,7 +129,6 @@ enum PT_STARTUP_STATUS {
 	STARTUP_STATUS_FULL			= 0x1FF
 };
 
-#define PT_INITIAL_DEBUG_LEVEL DL_WARN
 #define PT_INITIAL_SHOW_TIME_STAMP 0
 
 /*
@@ -137,8 +138,7 @@ enum PT_STARTUP_STATUS {
 	do { \
 		struct pt_core_data *cd_tmp = dev_get_drvdata(dev);\
 		if (cd_tmp->debug_level >= dlevel) {\
-			dev_err(dev, "%d-[%u]"format, dlevel,\
-			jiffies_to_msecs(jiffies), ##arg);\
+			dev_err(dev, "[%d] "format, dlevel, ##arg);\
 		} \
 	} while (0)
 
@@ -294,14 +294,14 @@ enum PT_STARTUP_STATUS {
  * will be in the 200 range. Commands that do not
  * require additional parameters remain below 200.
  */
-#define PT_DRV_DBG_REPORT_LEVEL		 200
-#define PT_DRV_DBG_WATCHDOG_INTERVAL	 201
-#define PT_DRV_DBG_SHOW_TIMESTAMP	 202
-#define PT_DRV_DBG_SET_PIP_2P0_FLAG	 203
-#define	PT_DRV_DBG_FLUSH_I2C_BUS	 204
-#define	PT_DRV_DBG_TC3300_LEN_FLAG	 205
-#define PT_DRV_DBG_WD_CORRECTIVE_ACTION  298
-#define PT_DRV_DBG_VIRTUAL_I2C_DUT       299
+#define PT_DRV_DBG_REPORT_LEVEL			200
+#define PT_DRV_DBG_WATCHDOG_INTERVAL		201
+#define PT_DRV_DBG_SHOW_TIMESTAMP		202
+#ifdef TTDL_DIAGNOSTICS
+#define	PT_DRV_DBG_FLUSH_I2C_BUS		204
+#define PT_DRV_DBG_WD_CORRECTIVE_ACTION		298
+#define PT_DRV_DBG_VIRTUAL_I2C_DUT		299
+#endif /* TTDL DIAGNOSTICS */
 
 /* Recognized usages */
 /* undef them first for possible redefinition in Linux */
@@ -1109,7 +1109,7 @@ struct pt_features {
 };
 
 #define NEED_SUSPEND_NOTIFIER \
-	((LINUX_VERSION_CODE < KERNEL_VERSION(3, 3, 0)) \
+	((KERNEL_VERSION(3, 3, 0) > LINUX_VERSION_CODE) \
 	&& defined(CONFIG_PM_SLEEP) && defined(CONFIG_PM_RUNTIME))
 
 struct pt_module {
@@ -1132,6 +1132,7 @@ struct pt_core_data {
 	struct mutex hid_report_lock;
 	struct mutex sysfs_lock;
 	struct mutex ttdl_restart_lock;
+	struct mutex firmware_class_lock;
 	enum pt_mode mode;
 	spinlock_t spinlock;
 	struct pt_mt_data md;
@@ -1171,12 +1172,12 @@ struct pt_core_data {
 	 */
 	struct notifier_block pm_notifier;
 #endif
-	struct work_struct startup_work;
 	struct pt_sysinfo sysinfo;
 	void *exclusive_dev;
 	int exclusive_waits;
-	struct work_struct watchdog_work;
 	struct timer_list watchdog_timer;
+	struct work_struct watchdog_work;
+	struct work_struct startup_work;
 #ifdef PT_PTSBC_SUPPORT
 	struct work_struct irq_work;
 	struct work_struct probe_work;
@@ -1241,6 +1242,7 @@ struct pt_core_data {
 	u32 irq_count;
 	u32 bl_retry_packet_count;
 	unsigned long t_refresh_time;
+	u16 err_gpio;
 #endif
 };
 

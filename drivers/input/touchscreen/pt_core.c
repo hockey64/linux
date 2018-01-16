@@ -167,7 +167,7 @@ void pt_pr_buf(struct device *dev, u8 debug_level, u8 *buf,
 
 	/* only proceed if valid debug level and there is data to print */
 	if (debug_level <= cd->debug_level && buf_len > 0) {
-		char pr_buf[1024];
+		char pr_buf[1018];
 
 		/*
 		 * Subtract size of name, 11 bytes for " [0..xxx]: " and
@@ -599,6 +599,26 @@ static int pt_hid_exec_cmd_(struct pt_core_data *cd,
 	kfree(cmd);
 	return rc;
 }
+#ifdef TTDL_DIAGNOSTICS
+/*******************************************************************************
+ * FUNCTION: pt_toggle_err_gpio
+ *
+ * SUMMARY: Toggles the pre-defined error GPIO
+ *
+ * RETURN: n/a
+ *
+ * PARAMETERS:
+ *	*cd - pointer to core data
+ ******************************************************************************/
+void pt_toggle_err_gpio(struct pt_core_data *cd)
+{
+	if (cd->err_gpio) {
+		pt_debug(cd->dev, DL_ERROR, "%s: Toggle ERR GPIO\n", __func__);
+		gpio_direction_output(cd->err_gpio,
+			!gpio_get_value(cd->err_gpio));
+	}
+}
+#endif /* TTDL_DIAGNOSTICS */
 
 /*******************************************************************************
  * FUNCTION: pt_hid_exec_cmd_and_wait_
@@ -653,6 +673,7 @@ static int pt_hid_exec_cmd_and_wait_(struct pt_core_data *cd,
 	if (IS_TMO(t)) {
 #ifdef TTDL_DIAGNOSTICS
 		cd->i2c_transmission_error_count++;
+		pt_toggle_err_gpio(cd);
 #endif /* TTDL_DIAGNOSTICS */
 		pt_debug(cd->dev, DL_ERROR,
 			"%s: HID output cmd execution timed out\n",
@@ -1042,22 +1063,19 @@ static int pt_hid_output_validate_bl_response(
 	if (cd->response_buf[HID_OUTPUT_RESPONSE_REPORT_OFFSET]
 			!= HID_BL_RESPONSE_REPORT_ID) {
 		pt_debug(cd->dev, DL_ERROR,
-			"%s: HID output response, wrong report_id\n",
-			__func__);
+			"%s: BL output response, wrong report_id\n", __func__);
 		return -EPROTO;
 	}
 
 	if (cd->response_buf[4] != HID_OUTPUT_BL_SOP) {
 		pt_debug(cd->dev, DL_ERROR,
-			"%s: HID output response, wrong SOP\n",
-			__func__);
+			"%s: BL output response, wrong SOP\n", __func__);
 		return -EPROTO;
 	}
 
 	if (cd->response_buf[size - 1] != HID_OUTPUT_BL_EOP) {
 		pt_debug(cd->dev, DL_ERROR,
-			"%s: HID output response, wrong EOP\n",
-			__func__);
+			"%s: BL output response, wrong EOP\n", __func__);
 		return -EPROTO;
 	}
 
@@ -1065,7 +1083,7 @@ static int pt_hid_output_validate_bl_response(
 	if (cd->response_buf[size - 3] != LOW_BYTE(crc)
 			|| cd->response_buf[size - 2] != HI_BYTE(crc)) {
 		pt_debug(cd->dev, DL_ERROR,
-			"%s: HID output response, wrong CRC 0x%X\n",
+			"%s: BL output response, wrong CRC 0x%X\n",
 			__func__, crc);
 		return -EPROTO;
 	}
@@ -1073,7 +1091,7 @@ static int pt_hid_output_validate_bl_response(
 	status = cd->response_buf[5];
 	if (status) {
 		pt_debug(cd->dev, DL_ERROR,
-			"%s: HID output response, ERROR:%d\n",
+			"%s: BL output response, ERROR:%d\n",
 			__func__, status);
 		return -EPROTO;
 	}
@@ -1109,8 +1127,7 @@ static int pt_hid_output_validate_app_response(
 	if (cd->response_buf[HID_OUTPUT_RESPONSE_REPORT_OFFSET]
 			!= HID_APP_RESPONSE_REPORT_ID) {
 		pt_debug(cd->dev, DL_ERROR,
-			"%s: HID output response, wrong report_id\n",
-			__func__);
+			"%s: APP output response, wrong report_id\n", __func__);
 		return -EPROTO;
 	}
 
@@ -1118,7 +1135,7 @@ static int pt_hid_output_validate_app_response(
 		& HID_OUTPUT_RESPONSE_CMD_MASK;
 	if (command_code != hid_output->command_code) {
 		pt_debug(cd->dev, DL_ERROR,
-			"%s: HID output response, wrong command_code:%X\n",
+			"%s: APP output response, wrong command_code:%X\n",
 			__func__, command_code);
 		return -EPROTO;
 	}
@@ -1321,6 +1338,7 @@ static int pt_hid_send_output_user_and_wait_(struct pt_core_data *cd,
 	if (IS_TMO(t)) {
 #ifdef TTDL_DIAGNOSTICS
 		cd->i2c_transmission_error_count++;
+		pt_toggle_err_gpio(cd);
 #endif /* TTDL_DIAGNOSTICS */
 		pt_debug(cd->dev, DL_ERROR,
 			"%s: HID output cmd execution timed out\n",
@@ -1533,6 +1551,7 @@ static int pt_hid_send_output_and_wait_(struct pt_core_data *cd,
 	if (IS_TMO(t)) {
 #ifdef TTDL_DIAGNOSTICS
 		cd->i2c_transmission_error_count++;
+		pt_toggle_err_gpio(cd);
 #endif /* TTDL_DIAGNOSTICS */
 		pt_debug(cd->dev, DL_ERROR,
 			"%s: HID output cmd execution timed out\n",
@@ -1703,28 +1722,6 @@ static int _pt_request_pip_start_bl(struct device *dev, int protect)
 		return pt_pip_start_bootloader(cd);
 
 	return pt_pip_start_bootloader_(cd);
-}
-
-/*******************************************************************************
- * FUNCTION: _pt_request_dut_generation
- *
- * SUMMARY: Function pointer included in core_nonhid_cmds to allow other
- *	modules to request the class of the attached DUT:
- *		DUT_PIP1_ONLY (Gen5 or Gen6)
- *		DUT_PIP2_CAPABLE (TC33xx or TT7xxx)
- *
- * RETURN:
- *	 0 = success
- *	!0 = failure
- *
- * PARAMETERS:
- *      *dev     - pointer to device structure
- ******************************************************************************/
-static int _pt_request_dut_generation(struct device *dev)
-{
-	struct pt_core_data *cd = dev_get_drvdata(dev);
-
-	return cd->dut_generation;
 }
 
 /*******************************************************************************
@@ -4960,92 +4957,6 @@ exit:
 }
 
 /*******************************************************************************
- * FUNCTION: _pt_request_active_pip_protocol
- *
- * SUMMARY: Get active PIP protocol version using the PIP2 version command.
- *	Function will return PIP version of BL or application based on
- *	when it's called.
- *
- * RETURN:
- *	 0 = success
- *	!0 = failure
- *
- * PARAMETERS:
- *	*dev               - pointer to device structure
- *	 protect           - flag to run in protected mode
- *	*pip_version_major - pointer to store PIP major version
- *	*pip_version_minor - pointer to store PIP minor version
- ******************************************************************************/
-int _pt_request_active_pip_protocol(struct device *dev, int protect,
-	u8 *pip_version_major, u8 *pip_version_minor)
-{
-	u16 actual_read_len;
-	u8 read_buf[256];
-	struct pip2_cmd_structure pip2_cmd;
-	struct pt_core_data *cd = dev_get_drvdata(dev);
-	int rc;
-	struct pt_hid_output hid_output = {
-		HID_OUTPUT_APP_COMMAND(HID_OUTPUT_GET_SYSINFO),
-		.timeout_ms = PT_HID_OUTPUT_GET_SYSINFO_TIMEOUT,
-	};
-
-	/* PATCH - sleep required as FW is not ready to handle PIP2 cmd */
-	msleep(200);
-
-	rc = _pt_request_pip2_send_cmd(dev, protect, &pip2_cmd,
-		PIP2_CMD_ID_VERSION, NULL, 0, read_buf, &actual_read_len);
-
-	if (!rc) {
-		cd->dut_generation = DUT_PIP2_CAPABLE;
-		if ((read_buf[3] & 0x7F) == PIP2_CMD_ID_VERSION) {
-			*pip_version_minor =
-				read_buf[PIP2_RESPONSE_BODY_OFFSET];
-			*pip_version_major =
-				read_buf[PIP2_RESPONSE_BODY_OFFSET + 1];
-
-			pt_debug(dev, DL_INFO,
-				"%s: pip_version = 0x%02x.%02x\n", __func__,
-				*pip_version_major, *pip_version_minor);
-		} else
-			pt_debug(dev, DL_ERROR,
-				"%s: PIP2 Version cmd/resp mismatch, rc = %d\n",
-				__func__, rc);
-	} else {
-		/*
-		 * Legacy products do not support the pip2 protocol to get
-		 * pip version. However, they do support the "get sysinfo"
-		 * command to get pip version from FW, but the bootloader
-		 * does not support it. This function will try "get sysinfo"
-		 * command if the pip2 command failed but this cmd could also
-		 * fail if DUT is stuck in bootloader mode.
-		 */
-		cd->dut_generation = DUT_PIP1_ONLY;
-		pt_debug(dev, DL_WARN,
-			"%s: PIP2 no response rc = %d, try getting sysinfo\n",
-			__func__, rc);
-
-		rc = pt_hid_send_output_and_wait_(cd, &hid_output);
-
-		if (!rc) {
-			*pip_version_minor =
-				cd->response_buf[HID_SYSINFO_TTDATA_OFFSET+1];
-			*pip_version_major =
-				cd->response_buf[HID_SYSINFO_TTDATA_OFFSET];
-
-			pt_debug(dev, DL_INFO,
-				"%s: pip_version = 0x%02x.%02x\n", __func__,
-				*pip_version_major, *pip_version_minor);
-		} else
-			pt_debug(dev, DL_ERROR,
-				"%s: PIP comm FAILED, no response rc = %d\n",
-				__func__, rc);
-	}
-
-	return rc;
-}
-EXPORT_SYMBOL_GPL(_pt_request_active_pip_protocol);
-
-/*******************************************************************************
  * FUNCTION: pt_get_hid_descriptor_
  *
  * SUMMARY: Send the get HID descriptor command to the DUT and load the response
@@ -5066,6 +4977,26 @@ static int pt_get_hid_descriptor_(struct pt_core_data *cd,
 	int rc;
 	int t;
 	u8 cmd[2];
+
+	if (cd->dut_generation == DUT_PIP2_CAPABLE) {
+		/*
+		 * PT/TT devices no longer support the retrieval of the HID
+		 * descriptor, so the values are hard coded.
+		 */
+		cd->hid_desc.packet_id            = 0xF7;
+		cd->hid_desc.report_desc_len      = 230;
+		cd->hid_desc.report_desc_register = 0x0002;
+		cd->hid_desc.input_register       = 0x0003;
+		cd->hid_desc.max_input_len        = 0x0100;
+		cd->hid_desc.output_register      = 0x0004;
+		cd->hid_desc.max_output_len       = 0x00FE;
+		cd->hid_desc.command_register     = 0x0005;
+		cd->hid_desc.data_register        = 0x0006;
+		cd->hid_desc.vendor_id            = 0x04B4;
+		cd->hid_desc.product_id           = 0xC101;
+		rc = 0;
+		goto exit;
+	}
 
 	/*
 	 * During startup the HID descriptor is required for all future
@@ -5100,20 +5031,22 @@ static int pt_get_hid_descriptor_(struct pt_core_data *cd,
 			__func__, rc);
 		goto error;
 	}
+
 	t = wait_event_timeout(cd->wait_q, (cd->hid_cmd_state == 0),
 		msecs_to_jiffies(PT_HID_GET_HID_DESCRIPTOR_TIMEOUT));
 
 	if (IS_TMO(t)) {
 #ifdef TTDL_DIAGNOSTICS
 		cd->i2c_transmission_error_count++;
+		pt_toggle_err_gpio(cd);
 #endif /* TTDL_DIAGNOSTICS */
 		pt_debug(cd->dev, DL_ERROR,
 			"%s: HID get descriptor timed out\n", __func__);
-		cd->hw_detected = false;
 		rc = -ETIME;
 		goto error;
-	} else
+	} else {
 		cd->hw_detected = true;
+	}
 
 	/* Load the HID descriptor including all registers */
 	memcpy((u8 *)desc, cd->response_buf, sizeof(struct pt_hid_desc));
@@ -5199,6 +5132,165 @@ static int _pt_request_get_hid_desc(struct device *dev, int protect)
 }
 
 /*******************************************************************************
+ * FUNCTION: _pt_request_active_pip_protocol
+ *
+ * SUMMARY: Get active PIP protocol version using the PIP2 version command.
+ *	Function will return PIP version of BL or application based on
+ *	when it's called.
+ *
+ * RETURN:
+ *	 0 = success
+ *	!0 = failure
+ *
+ * PARAMETERS:
+ *	*dev               - pointer to device structure
+ *	 protect           - flag to run in protected mode
+ *	*pip_version_major - pointer to store PIP major version
+ *	*pip_version_minor - pointer to store PIP minor version
+ ******************************************************************************/
+int _pt_request_active_pip_protocol(struct device *dev, int protect,
+	u8 *pip_version_major, u8 *pip_version_minor)
+{
+	u16 actual_read_len;
+	u8 read_buf[256];
+	struct pip2_cmd_structure pip2_cmd;
+	struct pt_core_data *cd = dev_get_drvdata(dev);
+	int rc;
+	struct pt_hid_output sys_info = {
+		HID_OUTPUT_APP_COMMAND(HID_OUTPUT_GET_SYSINFO),
+		.timeout_ms = PT_HID_OUTPUT_GET_SYSINFO_TIMEOUT,
+	};
+
+	/* PATCH - sleep required as FW is not ready to handle PIP2 cmd */
+	msleep(200);
+
+	rc = _pt_request_pip2_send_cmd(dev, protect, &pip2_cmd,
+		PIP2_CMD_ID_VERSION, NULL, 0, read_buf, &actual_read_len);
+	if (!rc) {
+		if ((read_buf[3] & 0x7F) == PIP2_CMD_ID_VERSION) {
+			*pip_version_minor =
+				read_buf[PIP2_RESPONSE_BODY_OFFSET];
+			*pip_version_major =
+				read_buf[PIP2_RESPONSE_BODY_OFFSET + 1];
+
+			pt_debug(dev, DL_INFO,
+				"%s: pip_version = 0x%02x.%02x\n", __func__,
+				*pip_version_major, *pip_version_minor);
+		} else
+			pt_debug(dev, DL_ERROR,
+				"%s: PIP2 Version cmd/resp mismatch, rc = %d\n",
+				__func__, rc);
+	} else {
+		/*
+		 * Legacy products do not support the pip2 protocol to get
+		 * pip version. However, they do support the "get sysinfo"
+		 * command to get pip version from FW, but the bootloader
+		 * does not support it. This function will try "get sysinfo"
+		 * command if the pip2 command failed but this cmd could also
+		 * fail if DUT is stuck in bootloader mode.
+		 */
+		pt_debug(dev, DL_WARN,
+			"%s: PIP2 no response rc = %d, try legacy cmd\n",
+			__func__, rc);
+
+		rc = pt_hid_send_output_and_wait_(cd, &sys_info);
+		if (!rc) {
+			*pip_version_minor =
+				cd->response_buf[HID_SYSINFO_TTDATA_OFFSET+1];
+			*pip_version_major =
+				cd->response_buf[HID_SYSINFO_TTDATA_OFFSET];
+
+			pt_debug(dev, DL_INFO,
+				"%s: pip_version = 0x%02X.%02X\n", __func__,
+				*pip_version_major, *pip_version_minor);
+		} else {
+			pt_debug(dev, DL_ERROR,
+				"%s: pip_version Not Detected\n", __func__);
+		}
+	}
+
+	return rc;
+}
+EXPORT_SYMBOL_GPL(_pt_request_active_pip_protocol);
+
+/*******************************************************************************
+ * FUNCTION: _pt_request_dut_generation
+ *
+ * SUMMARY: Determine the generation of device that we are communicating with:
+ *		DUT_PIP1_ONLY (Gen5 or Gen6)
+ *		DUT_PIP2_CAPABLE (TC33xx or TT7xxx)
+ *	The HID_DESC command is supported in Gen5/6 BL and FW as well as
+ *	TT/TC FW. The packet ID in the descriptor, however, is unique when
+ *	coming form the BL or the FW:
+ *		Packet_ID in BL = 0xFF
+ *		Packet_ID in FW = 0xF7
+ *
+ * RETURN:
+ *	 0 = success
+ *	!0 = failure
+ *
+ * PARAMETERS:
+ *      *dev     - pointer to device structure
+ ******************************************************************************/
+static int _pt_request_dut_generation(struct device *dev)
+{
+	int rc;
+	u8 gen = DUT_UNKNOWN;
+	u8 mode = PT_MODE_UNKNOWN;
+	u8 read_buf[256];
+	u16 actual_read_len;
+	struct pt_core_data *cd = dev_get_drvdata(dev);
+	struct pip2_cmd_structure pip2_cmd;
+
+	mutex_lock(&cd->system_lock);
+	cd->dut_generation = DUT_UNKNOWN;
+	mutex_unlock(&cd->system_lock);
+
+	rc = pt_get_hid_descriptor_(cd, &cd->hid_desc);
+	if (!rc && cd->hid_desc.packet_id == 0xFF) {
+		gen = DUT_PIP1_ONLY; /* Gen5/6 BL */
+		mode = PT_MODE_BOOTLOADER;
+		/* Special case - FW Sentinel also sent in BL */
+		if (cd->startup_status & STARTUP_STATUS_FW_RESET_SENTINEL) {
+			mutex_lock(&cd->system_lock);
+			cd->startup_status = STARTUP_STATUS_BL_RESET_SENTINEL;
+			mutex_unlock(&cd->system_lock);
+		}
+	} else if (!rc && cd->hid_desc.packet_id == 0xF7) {
+		rc = _pt_request_pip2_send_cmd(dev, PT_CORE_CMD_UNPROTECTED,
+			&pip2_cmd, PIP2_CMD_ID_VERSION, NULL, 0, read_buf,
+			&actual_read_len);
+		if (!rc) {
+			gen = DUT_PIP2_CAPABLE; /* TT/TC FW */
+			mode = PT_MODE_OPERATIONAL;
+		} else {
+			gen = DUT_PIP1_ONLY; /* Gen5/6 FW */
+			mode = PT_MODE_OPERATIONAL;
+		}
+	} else if (rc) {
+		rc = _pt_request_pip2_send_cmd(dev, PT_CORE_CMD_UNPROTECTED,
+			&pip2_cmd, PIP2_CMD_ID_VERSION, NULL, 0, read_buf,
+			&actual_read_len);
+		if (!rc) {
+			gen = DUT_PIP2_CAPABLE; /* TT/TC BL */
+			mode = PT_MODE_BOOTLOADER;
+		}
+	}
+
+	mutex_lock(&cd->system_lock);
+	cd->dut_generation = gen;
+	cd->mode = mode;
+	mutex_unlock(&cd->system_lock);
+
+#ifdef TTDL_DIAGNOSTICS
+	pt_debug(cd->dev, DL_INFO, "%s: Generation=%d Mode=%d\n",
+		__func__, cd->dut_generation, cd->mode);
+#endif /* TTDL_DIAGNOSTICS */
+
+	return cd->dut_generation;
+}
+
+/*******************************************************************************
  * FUNCTION: pt_start_wd_timer
  *
  * SUMMARY: Starts the TTDL watchdog timer if the timer interval is > 0
@@ -5210,9 +5302,9 @@ static int _pt_request_get_hid_desc(struct device *dev, int protect)
  ******************************************************************************/
 static void pt_start_wd_timer(struct pt_core_data *cd)
 {
-	if (cd->watchdog_interval < 200) {
+	if (cd->watchdog_interval < 100) {
 		pt_debug(cd->dev, DL_ERROR,
-			"%s: ERROR: Invalid watchdog interval: %d\n",
+			"%s: WARNING: Invalid watchdog interval: %d\n",
 			__func__, cd->watchdog_interval);
 		return;
 	}
@@ -5330,7 +5422,7 @@ static int pt_hw_hard_reset(struct pt_core_data *cd)
 			"%s: Reset Startup Status bitmask\n", __func__);
 		cd->startup_status = STARTUP_STATUS_START;
 		cd->cpdata->xres(cd->cpdata, cd->dev);
-		pt_debug(cd->dev, DL_WARN, "%s: execute HARD reset\n",
+		pt_debug(cd->dev, DL_WARN, "%s: executed HARD reset\n",
 			__func__);
 		return 0;
 	}
@@ -5411,6 +5503,7 @@ static int pt_dut_reset_and_wait(struct pt_core_data *cd)
 		if (IS_TMO(t)) {
 #ifdef TTDL_DIAGNOSTICS
 			cd->i2c_transmission_error_count++;
+			pt_toggle_err_gpio(cd);
 #endif /* TTDL_DIAGNOSTICS */
 			pt_debug(cd->dev, DL_ERROR, "%s: reset timed out\n",
 				__func__);
@@ -6146,12 +6239,12 @@ static int parse_command_input(struct pt_core_data *cd, int size)
 /*******************************************************************************
  * FUNCTION: pt_parse_input
  *
- * SUMMARY: Parse the input data read from DUT due to IRQ having been triggered.
- *	Handle data based on if its a response to a command or asynchronous
- *	touch data. PIP2.x messages have addional error checking that is
+ * SUMMARY: Parse the input data read from DUT due to IRQ. Handle data based
+ *	on if its a response to a command or asynchronous touch data / reset
+ *	sentinel. PIP2.x messages have addional error checking that is
  *	parsed (SEQ match from cmd to rsp, CRC valid).
  *	Look for special packets based on unique lengths:
- *		0 bytes  - PIP1.x reset sentinel
+ *		0 bytes  - APP(FW) reset sentinel or Gen5/6 BL sentinel
  *		2 bytes  - Empty buffer (PIP 1.7 and earlier)
  *		11 bytes - possible PIP2.x reset sentinel (TAG and SEQ must = 0)
  *		0xFFXX   - Empty buffer (PIP 1.7+)
@@ -6179,36 +6272,42 @@ static int pt_parse_input(struct pt_core_data *cd)
 	size = get_unaligned_le16(&cd->input_buf[0]);
 	print_size = size;
 	pt_debug(cd->dev, DL_INFO, "<<< %s: IRQ Triggered, read len [%d]\n",
-		__func__, print_size);
+			__func__, print_size);
 	pt_pr_buf(cd->dev, DL_DEBUG, cd->input_buf, print_size, "<<< Read buf");
 
 	if (size == 0 ||
 	   (size == 11 &&
-	    (cd->input_buf[PIP2_RESPONSE_SEQ_OFFSET] & 0x0F) == 0 &&
-	    (cd->input_buf[PIP2_RESPONSE_ID_OFFSET] & 0x7F) ==
-	     PIP2_CMD_ID_STATUS)) {
+	   (cd->input_buf[PIP2_RESPONSE_SEQ_OFFSET] & 0x0F) == 0 &&
+	   (cd->input_buf[PIP2_RESPONSE_ID_OFFSET] & 0x7F) ==
+	   PIP2_CMD_ID_STATUS)) {
 		touch_report = false;
-
+		cd->hw_detected = true;
 		if (size == 0) {
-			cd->startup_status |= STARTUP_STATUS_FW_RESET_SENTINEL;
-			cd->pip2_prot_active = 0;
+			cd->startup_status = STARTUP_STATUS_FW_RESET_SENTINEL;
+			cd->pip2_prot_active = false;
 			pt_debug(cd->dev, DL_WARN,
-				"%s: FW Reset sentinel recieved\n", __func__);
+				"%s: FW Sentinel - %s(%d) %s(%d)\n", __func__,
+				"hid_cmd_state", cd->hid_cmd_state,
+				"hid_reset_cmd_state", cd->hid_reset_cmd_state);
 
-			if (!cd->hid_reset_cmd_state
-					&& cd->core_probe_complete) {
+			if ((!cd->hid_reset_cmd_state) &&
+			    (cd->core_probe_complete) &&
+			    (cd->hid_cmd_state !=
+			    HID_OUTPUT_START_BOOTLOADER + 1) &&
+				(cd->hid_cmd_state !=
+				HID_OUTPUT_BL_LAUNCH_APP + 1)) {
 				pt_debug(cd->dev, DL_WARN,
-					"%s: FW sentinel triggered restart\n",
-					__func__);
+					"%s: Queue Startup\n", __func__);
 				pt_queue_startup(cd);
 			}
+
 		} else {
-			cd->startup_status = STARTUP_STATUS_BL_RESET_SENTINEL;
+			/* Sentinel must be from TT/TC BL */
 			cd->pip2_prot_active = 1;
+			cd->startup_status = STARTUP_STATUS_BL_RESET_SENTINEL;
 			pt_debug(cd->dev, DL_WARN,
 				"%s: BL Reset sentinel recieved\n", __func__);
 		}
-
 		memcpy(cd->response_buf, cd->input_buf, 2);
 		mutex_lock(&cd->system_lock);
 		if (!cd->hid_reset_cmd_state && !cd->hid_cmd_state) {
@@ -6219,11 +6318,9 @@ static int pt_parse_input(struct pt_core_data *cd)
 		}
 
 		cd->hid_reset_cmd_state = 0;
-		if (cd->hid_cmd_state == HID_OUTPUT_START_BOOTLOADER + 1
-				|| cd->hid_cmd_state ==
-					HID_OUTPUT_BL_LAUNCH_APP + 1
-				|| cd->hid_cmd_state ==
-					HID_OUTPUT_USER_CMD + 1)
+		if (cd->hid_cmd_state == HID_OUTPUT_START_BOOTLOADER + 1 ||
+		    cd->hid_cmd_state == HID_OUTPUT_BL_LAUNCH_APP + 1 ||
+		    cd->hid_cmd_state == HID_OUTPUT_USER_CMD + 1)
 			cd->hid_cmd_state = 0;
 		wake_up(&cd->wait_q);
 		mutex_unlock(&cd->system_lock);
@@ -6247,12 +6344,12 @@ static int pt_parse_input(struct pt_core_data *cd)
 	if (cd->pip2_prot_active) {
 		pt_debug(cd->dev, DL_DEBUG,
 			"%s: Decode PIP2.x Response\n", __func__);
-		if (cd->pip2_cmd_tag_seq != (cd->input_buf[2] & 0x0F))
+		if (cd->pip2_cmd_tag_seq != (cd->input_buf[2] & 0x0F)) {
 			pt_debug(cd->dev, DL_WARN,
-				"%s: !!! PIP2 SEQ MISSMATCH: cmd = 0x%02X rsp = 0x%02X\n",
+				"%s: ###PIP2 SEQ ERR: cmd=0x%02X rsp=0x%02X\n",
 				__func__, cd->pip2_cmd_tag_seq,
 				(cd->input_buf[2] & 0x0F));
-
+		}
 		/* PIP2 does not have a report id, hard code it */
 		report_id = 0x00;
 		cmd_id = cd->input_buf[PIP2_HID_INPUT_RESP_CMD_OFFSET];
@@ -6262,21 +6359,23 @@ static int pt_parse_input(struct pt_core_data *cd)
 		resp_crc |= cd->input_buf[size - 1];
 		if (resp_crc != calc_crc) {
 			pt_debug(cd->dev, DL_ERROR,
-				"%s: ### PIP2 CRC ERROR: resp = 0x%04X calc = 0x%04X\n",
+				"%s: ###PIP2 CRC ERR: rsp=0x%04X calc=0x%04X\n",
 				__func__, resp_crc, calc_crc);
 #ifdef TTDL_DIAGNOSTICS
 			cd->i2c_crc_error_count++;
-#endif /* TTDL_DIAGNOSTICS */
 			/* TODO - Add retry read */
+#endif /* TTDL_DIAGNOSTICS */
 		}
 	} else {
 		report_id = cd->input_buf[HID_OUTPUT_RESPONSE_REPORT_OFFSET];
 		cmd_id = cd->input_buf[HID_OUTPUT_RESPONSE_CMD_OFFSET];
 	}
 
+#ifdef TTDL_DIAGNOSTICS
 	pt_debug(cd->dev, DL_INFO,
 		"%s: pip2 = %d report_id: 0x%02X, cmd_code: 0x%02X\n",
 		__func__, cd->pip2_prot_active, report_id, (cmd_id & 0x7F));
+#endif /* TTDL_DIAGNOSTICS */
 
 	if (report_id == HID_WAKEUP_REPORT_ID) {
 		pt_wakeup_host(cd);
@@ -6341,6 +6440,11 @@ static int pt_read_input(struct pt_core_data *cd)
 			if (IS_TMO(t)) {
 #ifdef TTDL_DIAGNOSTICS
 				cd->i2c_transmission_error_count++;
+				pt_toggle_err_gpio(cd);
+				pt_debug(dev, DL_ERROR,
+					"%s: !!!I2C Transmission Error %d\n",
+					__func__,
+					cd->i2c_transmission_error_count);
 #endif /* TTDL_DIAGNOSTICS */
 				pt_queue_startup(cd);
 			}
@@ -7185,14 +7289,15 @@ reset:
 		}
 	}
 
-	/*
-	 * Excluding this reset for TDDIs and TT_DISCRETE parts because
-	 * if the FW image was directly loaded to SRAM issuing a reset will
-	 * wipe out what was just loaded.
-	 */
+	_pt_request_dut_generation(cd->dev);
 	if (cd->dut_generation == DUT_PIP1_ONLY) {
 		if (reset || try != PT_CORE_STARTUP_RETRY_COUNT) {
-			/* reset hardware */
+			/*
+			 * Reset hardware only for Legacy parts. Skip for TT/TC
+			 * parts because if the FW image was loaded directly
+			 * to SRAM issueing a reset ill wipe out what was just
+			 * loaded.
+			 */
 			rc = pt_dut_reset_and_wait(cd);
 			if (rc < 0) {
 				pt_debug(cd->dev, DL_ERROR,
@@ -7214,7 +7319,9 @@ reset:
 			goto exit;
 		}
 
-		cd->startup_status |= STARTUP_STATUS_GET_DESC;
+		/* Don't set DESC flag if in Gen5/6 BL */
+		if (!cd->hid_desc.packet_id == 0xFF)
+			cd->startup_status |= STARTUP_STATUS_GET_DESC;
 		detected = true;
 
 		cd->mode = pt_get_mode(cd, &cd->hid_desc);
@@ -7243,16 +7350,6 @@ reset:
 		if (rc < 0) {
 			pt_debug(cd->dev, DL_ERROR,
 				"%s: Error on launch app r=%d\n",
-				__func__, rc);
-			if (try++ < PT_CORE_STARTUP_RETRY_COUNT)
-				goto reset;
-			goto exit;
-		}
-
-		rc = pt_get_hid_descriptor_(cd, &cd->hid_desc);
-		if (rc < 0) {
-			pt_debug(cd->dev, DL_ERROR,
-				"%s: Error on getting HID descriptor r=%d\n",
 				__func__, rc);
 			if (try++ < PT_CORE_STARTUP_RETRY_COUNT)
 				goto reset;
@@ -7292,8 +7389,7 @@ reset:
 		}
 		cd->startup_status |= STARTUP_STATUS_GET_MODE;
 	} else {
-		cd->startup_status |= STARTUP_STATUS_GET_DESC;
-
+		/* Generation is PIP2 Capable */
 		_pt_request_pip2_get_mode(cd->dev, PT_CORE_CMD_UNPROTECTED,
 					&mode);
 		cd->mode = mode;
@@ -7312,6 +7408,7 @@ reset:
 				goto reset;
 			goto exit;
 		}
+		cd->startup_status |= STARTUP_STATUS_GET_DESC;
 		cd->startup_status |= STARTUP_STATUS_GET_MODE;
 		detected = true;
 	}
@@ -9083,6 +9180,7 @@ static void pt_watchdog_work(struct work_struct *work)
 			__func__);
 #ifdef TTDL_DIAGNOSTICS
 		cd->watchdog_irq_stuck_count++;
+		pt_toggle_err_gpio(cd);
 #endif /* TTDL_DIAGNOSTICS */
 		if (cd->wd_corrective_action == 1) {
 			/* Do a flush based on the 2 byte read length */
@@ -9108,6 +9206,7 @@ queue_startup:
 	if (rc) {
 #ifdef TTDL_DIAGNOSTICS
 		cd->watchdog_failed_access_count++;
+		pt_toggle_err_gpio(cd);
 #endif /* TTDL_DIAGNOSTICS */
 		pt_debug(cd->dev, DL_ERROR,
 			"%s: failed to access device in WD, retry count=%d\n",
@@ -9124,7 +9223,7 @@ queue_startup:
 			 * worker thread
 			 */
 			if (cd->wd_corrective_action && cd->cpdata->xres) {
-				cd->hw_detected = 0;
+				cd->hw_detected = false;
 				cd->startup_status = STARTUP_STATUS_START;
 #ifdef TTDL_DIAGNOSTICS
 				cd->wd_xres_count++;
@@ -9167,7 +9266,7 @@ queue_startup:
 			kthread_run(start_fw_upgrade, cd, "pt_loader");
 		}
 	} else {
-		cd->hw_detected = 1;
+		cd->hw_detected = true;
 		if (cd->startup_status <= (STARTUP_STATUS_FW_RESET_SENTINEL |
 		    STARTUP_STATUS_BL_RESET_SENTINEL)) {
 			pt_debug(cd->dev, DL_WARN,
@@ -9269,6 +9368,78 @@ static void pt_probe_timer(unsigned long handle)
 /*******************************************************************************
  * Core sysfs show and store functions
  ******************************************************************************/
+
+#ifdef TTDL_DIAGNOSTICS
+/*******************************************************************************
+ * FUNCTION: pt_err_gpio_show
+ *
+ * SUMMARY: Show method for the err_gpio sysfs node that will show if
+ *	setting up the gpio was successful
+ *
+ * RETURN: Char buffer with printed GPIO creation state
+ *
+ * PARAMETERS:
+ *	*dev  - pointer to device structure
+ *	*attr - pointer to device attributes
+ *	*buf  - pointer to output buffer
+ ******************************************************************************/
+static ssize_t pt_err_gpio_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct pt_core_data *cd = dev_get_drvdata(dev);
+
+	return sprintf(buf, "Err GPIO %d: %s\n", cd->err_gpio,
+		(cd->err_gpio ? (gpio_get_value(cd->err_gpio) ?
+		"HIGH" : "low") : "not defined"));
+}
+
+/*******************************************************************************
+ * FUNCTION: pt_err_gpio_store
+ *
+ * SUMMARY: The store method for the err_gpio sysfs node that allows any
+ *	available host GPIO to be used to trigger when TTDL detects a PIP
+ *	command/response timeout.
+ *
+ * RETURN:
+ *	 0 = success
+ *	!0 = failure
+ *
+ * PARAMETERS:
+ *	*dev  - pointer to device structure
+ *	*attr - pointer to device attributes
+ *	*buf  - pointer to buffer that hold the command parameters
+ *	 size - size of buf
+ ******************************************************************************/
+static ssize_t pt_err_gpio_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct pt_core_data *cd = dev_get_drvdata(dev);
+	unsigned long value;
+	int rc = 0;
+
+	rc = kstrtoul(buf, 10, &value);
+	if (rc < 0) {
+		pt_debug(dev, DL_ERROR, "%s: Invalid value\n", __func__);
+		goto exit;
+	}
+
+	mutex_lock(&cd->system_lock);
+	gpio_free(value);
+	rc = gpio_request(value, NULL);
+	if (rc) {
+		pt_debug(dev, DL_ERROR, "error requesting gpio %lu\n", value);
+	} else {
+		cd->err_gpio = value;
+		gpio_direction_output(value, 0);
+	}
+	mutex_unlock(&cd->system_lock);
+
+exit:
+	return size;
+}
+static DEVICE_ATTR(err_gpio, S_IRUGO | S_IWUSR, pt_err_gpio_show,
+	pt_err_gpio_store);
+#endif /* TTDL_DIAGNOSTICS */
 
 /*******************************************************************************
  * FUNCTION: pt_ic_ver_show
@@ -9827,11 +9998,6 @@ static ssize_t pt_drv_debug_store(struct device *dev,
 			pt_debug(dev, DL_INFO, "%s: Resume succeeded\n",
 				__func__);
 		break;
-	case PT_DRV_DBG_CLEAR_PARM_LIST:
-		pt_debug(dev, DL_INFO, "%s: TTDL: Clear Parameter List\n",
-			__func__);
-		pt_erase_parameter_list(cd);
-		break;
 	case PT_DRV_DBG_REPORT_LEVEL:
 		mutex_lock(&cd->system_lock);
 		if (input_data[1] < DL_MAX) {
@@ -9845,17 +10011,23 @@ static ssize_t pt_drv_debug_store(struct device *dev,
 		break;
 	case PT_DRV_DBG_WATCHDOG_INTERVAL:
 		mutex_lock(&cd->system_lock);
-		if (input_data[1] < 200) {
+		if (input_data[1] < 100) {
 			pt_debug(dev, DL_ERROR,
-				"%s: ERROR: Invalid watchdog interval: %d\n",
+				"%s: WARNING: Invalid watchdog interval: %d\n",
 				__func__, input_data[1]);
 		} else {
 			cd->watchdog_interval = input_data[1];
 			pt_start_wd_timer(cd);
 		}
+		mutex_unlock(&(cd->system_lock));
 		pt_debug(dev, DL_INFO, "%s: Watchdog interval Set to: %d\n",
 			__func__, cd->watchdog_interval);
-		mutex_unlock(&(cd->system_lock));
+		break;
+#ifdef TTDL_DIAGNOSTICS
+	case PT_DRV_DBG_CLEAR_PARM_LIST:
+		pt_debug(dev, DL_INFO, "%s: TTDL: Clear Parameter List\n",
+			__func__);
+		pt_erase_parameter_list(cd);
 		break;
 	case PT_DRV_DBG_SHOW_TIMESTAMP:
 		mutex_lock(&cd->system_lock);
@@ -9889,6 +10061,7 @@ static ssize_t pt_drv_debug_store(struct device *dev,
 			pt_flush_i2c(cd, 1);
 		mutex_unlock(&(cd->system_lock));
 		break;
+#endif /* TTDL_DIAGNOSTICS */
 	default:
 		pt_debug(dev, DL_ERROR, "%s: Invalid value\n", __func__);
 	}
@@ -10481,13 +10654,11 @@ static ssize_t pt_ttdl_bist_show(struct device *dev,
 	u8 xres_err_str[64];
 	u8 runfw_err_str[64];
 	bool bl_detected_runfw_set = false;
+	int t;
 	int rc;
 	int count         = 0;
 	int status        = 1;    /* 0 = Pass, !0 = fail */
 	int bytes_read    = 0;
-	u8 attempt        = 0;
-	u8 pip_ver_minor  = 0;
-	u8 pip_ver_major  = 0;
 	u8 irq_toggled    = 0x0F; /* default to untested */
 	u8 xres_toggled   = 0x0F; /* default to untested */
 	u8 runfw_toggled  = 0x0F; /* default to untested */
@@ -10556,8 +10727,8 @@ static ssize_t pt_ttdl_bist_show(struct device *dev,
 	}
 
 	/* Try sending a PIP command to see if we get a response */
-	rc = _pt_request_active_pip_protocol(dev, PT_CORE_CMD_PROTECTED,
-		&pip_ver_major, &pip_ver_minor);
+	rc = _pt_request_pip2_send_cmd(dev, PT_CORE_CMD_PROTECTED, &pip2_cmd,
+		PIP2_CMD_ID_VERSION, NULL, 0, read_buf, &actual_read_len);
 	if (rc) {
 		/*
 		 * Potential IRQ issue, but could also be bad FW not
@@ -10597,13 +10768,27 @@ bist_tp_xres:
 		bytes_read += pt_flush_i2c(cd, 0);
 	}
 
-	/* Perform a hard XRES toggle and check for reset sentinel */
+	/* Perform a hard XRES toggle and wait for reset sentinel */
+	mutex_lock(&cd->system_lock);
+	cd->startup_status = STARTUP_STATUS_START;
+	cd->hid_reset_cmd_state = 1;
+	mutex_unlock(&cd->system_lock);
 	pt_debug(dev, DL_INFO, "%s: Perform a hard reset\n", __func__);
 	rc = pt_hw_hard_reset(cd);
 
-	msleep(150);
+	t = wait_event_timeout(cd->wait_q,
+		(cd->startup_status != STARTUP_STATUS_START),
+		msecs_to_jiffies(500));
+	if (IS_TMO(t)) {
+		pt_debug(cd->dev, DL_ERROR,
+			"%s: TMO waiting for DUT enumeration\n", __func__);
+		strcpy(xres_err_str, "- likely open. (No Reset Sentinel)");
+		goto print_results;
+	}
+
 	pt_debug(dev, DL_INFO, "%s: TP_XRES BIST hard reset rc=%d",
 		__func__, rc);
+	cd->hid_reset_cmd_state = 0;
 
 	/* Look for BL or FW reset sentinels */
 	if (!rc && ((cd->startup_status & STARTUP_STATUS_BL_RESET_SENTINEL) ||
@@ -10686,8 +10871,20 @@ bist_tp_xres:
 	_pt_request_set_runfw_pin(dev, 0);
 
 	/* Reset the DUT and then verify we stay in the BL */
+	mutex_lock(&cd->system_lock);
+	cd->startup_status = STARTUP_STATUS_START;
+	mutex_unlock(&cd->system_lock);
 	rc = pt_dut_reset(cd, PT_CORE_CMD_UNPROTECTED);
-	msleep(150);
+	t = wait_event_timeout(cd->wait_q,
+		(cd->startup_status != STARTUP_STATUS_START),
+		msecs_to_jiffies(500));
+	if (IS_TMO(t)) {
+		pt_debug(cd->dev, DL_ERROR,
+			"%s: TMO waiting for DUT enumeration\n", __func__);
+		strcpy(xres_err_str, "- likely open. (No Reset Sentinel)");
+		goto print_results;
+	}
+
 	pt_debug(dev, DL_INFO, "%s: RUN_FW BIST reset rc=%d", __func__, rc);
 	pt_debug(dev, DL_INFO, "%s: Startup_status = 0x%04X\n", __func__,
 		cd->startup_status);
@@ -10823,15 +11020,30 @@ bist_tp_xres:
 
 	/* De-assert the RunFW pin to allow the BL to try and load FW */
 	_pt_request_set_runfw_pin(dev, 1);
+	mutex_lock(&cd->system_lock);
+	cd->startup_status = STARTUP_STATUS_START;
+	mutex_unlock(&cd->system_lock);
 
 	/* The DUT is in the BL so send a BL RESET command to reset the DUT */
 	rc = _pt_request_pip2_send_cmd(dev, PT_CORE_CMD_PROTECTED,
 		&pip2_cmd, PIP2_CMD_ID_RESET, NULL, 0, read_buf,
 		&actual_read_len);
-	if (rc)
+	if (rc) {
 		pt_debug(dev, DL_ERROR, "%s: Sending BL RESET cmd failed\n",
 			__func__);
-	msleep(150);
+		/* RESET cmd failed so as a last ditch effort reset the part */
+		rc = pt_dut_reset(cd, PT_CORE_CMD_UNPROTECTED);
+	}
+	t = wait_event_timeout(cd->wait_q,
+		(cd->startup_status != STARTUP_STATUS_START),
+		msecs_to_jiffies(500));
+	if (IS_TMO(t)) {
+		pt_debug(cd->dev, DL_ERROR,
+			"%s: TMO waiting for DUT enumeration\n", __func__);
+		strcpy(xres_err_str, "- likely open. (No Reset Sentinel)");
+		goto print_results;
+	}
+
 
 	/*
 	 * Four possible outcomes:
@@ -10899,31 +11111,23 @@ bist_tp_xres:
 
 exit_bl:
 	/*
-	 * We're done! - De-assert RunFW pin and perform a hard 50ms XRES
+	 * We're done! - De-assert RunFW pin and perform a hard XRES
 	 * toggle, allowing BL to load FW if there is any in Flash
 	 */
 	pt_debug(dev, DL_WARN,
 		"%s: TTDL BIST Complete - Final reset\n", __func__);
 	_pt_request_set_runfw_pin(dev, 1);
-	rc = pt_hw_hard_reset(cd);
+	mutex_lock(&cd->system_lock);
+	cd->startup_status = STARTUP_STATUS_START;
+	mutex_unlock(&cd->system_lock);
 
-	/*
-	 * After the reset wait for either the BL sentinel or enum of the
-	 * DUT up to 200ms
-	 */
-	while (attempt++ < 10) {
-		msleep(20);
-		pt_debug(dev, DL_WARN,
-			"%s: 0x%04X Waiting for DUT enum for %dms",
-			__func__, cd->startup_status, attempt*20);
-		if (cd->startup_status == STARTUP_STATUS_BL_RESET_SENTINEL)
-			break;
-		if (cd->startup_status >= STARTUP_STATUS_FW_RESET_SENTINEL) {
-			/* DUT enum in progress, wait a bit more and break */
-			msleep(40);
-			attempt = 10;
-			break;
-		}
+	rc = pt_hw_hard_reset(cd);
+	t = wait_event_timeout(cd->wait_q,
+		(cd->startup_status != STARTUP_STATUS_START),
+		msecs_to_jiffies(500));
+	if (IS_TMO(t)) {
+		pt_debug(cd->dev, DL_ERROR,
+			"%s: TMO waiting for DUT enumeration\n", __func__);
 	}
 
 print_results:
@@ -11341,10 +11545,10 @@ static ssize_t pt_pip2_get_version_show(struct device *dev,
 				read_buf[index + 21]);
 		} else {
 			return snprintf(buf, PT_MAX_PRBUF_SIZE,
-				"PIP VERSION   : %02x.%02x\n"
-				"BL VERSION    : %02x.%02x\n"
-				"FW VERSION    : %02x.%02x\n"
-				"SILICON ID    : %02x.%02x.%02x.%02x\n"
+				"PIP VERSION   : %02X.%02X\n"
+				"BL VERSION    : %02X.%02X\n"
+				"FW VERSION    : %02X.%02X\n"
+				"SILICON ID    : %02X.%02X.%02X.%02X\n"
 				"WAFER LOT     : n/a\n"
 				"WAFER SUB-LOT : n/a\n"
 				"WAFER NUMBER  : n/a\n"
@@ -11701,6 +11905,7 @@ int pt_probe(const struct pt_bus_ops *ops, struct device *dev,
 	mutex_init(&cd->hid_report_lock);
 	mutex_init(&cd->sysfs_lock);
 	mutex_init(&cd->ttdl_restart_lock);
+	mutex_init(&cd->firmware_class_lock);
 	spin_lock_init(&cd->spinlock);
 
 	/* Initialize module list */
@@ -11757,6 +11962,7 @@ int pt_probe(const struct pt_bus_ops *ops, struct device *dev,
 	device_create_file(dev, &dev_attr_ttdl_bist);
 	device_create_file(dev, &dev_attr_set_runfw_pin);
 	device_create_file(dev, &dev_attr_flush_i2c);
+	device_create_file(dev, &dev_attr_err_gpio);
 #endif /* TTDL_DIAGNOSTICS */
 
 	/*
@@ -11897,7 +12103,11 @@ static int pt_probe_complete(struct pt_core_data *cd)
 		pt_debug(cd->dev, DL_INFO, "%s: Detect HW\n", __func__);
 		rc = cd->cpdata->detect(cd->cpdata, cd->dev,
 				pt_platform_detect_read);
-		if (rc) {
+		if (!rc) {
+			cd->hw_detected = true;
+			pt_debug(cd->dev, DL_INFO, "%s: HW detected\n",
+					__func__);
+		} else {
 			cd->hw_detected = false;
 			pt_debug(cd->dev, DL_INFO, "%s: No HW detected\n",
 					__func__);
@@ -11946,6 +12156,14 @@ static int pt_probe_complete(struct pt_core_data *cd)
 		2 + get_unaligned_le16(&buf[0]));
 		pt_debug(dev, DL_INFO,
 			"%s: Buffer cleared, IRQ deasserted\n", __func__);
+	} else {
+		/*
+		 * With no IRQ Stat, force a read in case the reset sentinel
+		 * already arrieved.
+		 */
+		rc = pt_read_input(cd);
+		if (!rc)
+			pt_parse_input(cd);
 	}
 
 	/* Detect what PIP interface version the DUT is communicating in */
@@ -11955,7 +12173,6 @@ static int pt_probe_complete(struct pt_core_data *cd)
 	_pt_request_active_pip_protocol(cd->dev, PT_CORE_CMD_PROTECTED,
 		&pip_ver_major, &pip_ver_minor);
 	if (pip_ver_major == 2) {
-		cd->hw_detected = true;
 		cd->bl_pip_version_major = pip_ver_major;
 		cd->bl_pip_version_minor = pip_ver_minor;
 		dev_err(dev, " ======== PIP2.%02X Detected ========\n",
@@ -11983,16 +12200,14 @@ static int pt_probe_complete(struct pt_core_data *cd)
 #endif /* TTDL_DIAGNOSTICS */
 		goto create_sysfs_nodes;
 	} else if (pip_ver_major == 1) {
-		cd->hw_detected = true;
 		cd->bl_pip_version_major = pip_ver_major;
 		cd->bl_pip_version_minor = pip_ver_minor;
 		dev_err(dev, " ======== PIP1.%02X Detected ========\n",
 			pip_ver_minor);
 	} else {
-		cd->hw_detected = false;
-		dev_err(dev, " ======== DUT Not Detected  ========\n");
+		dev_err(dev, " ======== PIP Version Not Retrieved  ========\n");
 		pm_runtime_put_sync(dev);
-		goto create_sysfs_nodes;
+		/* goto create_sysfs_nodes; */
 	}
 
 	/*
@@ -12017,6 +12232,7 @@ static int pt_probe_complete(struct pt_core_data *cd)
 	}
 
 create_sysfs_nodes:
+	_pt_request_dut_generation(cd->dev);
 	if (cd->dut_generation == DUT_PIP2_CAPABLE) {
 		device_create_file(dev, &dev_attr_pip2_bin_hdr);
 		device_create_file(dev, &dev_attr_pip2_get_version);
@@ -12191,6 +12407,7 @@ int pt_release(struct pt_core_data *cd)
 	device_remove_file(dev, &dev_attr_ttdl_bist);
 	device_remove_file(dev, &dev_attr_set_runfw_pin);
 	device_remove_file(dev, &dev_attr_flush_i2c);
+	device_remove_file(dev, &dev_attr_err_gpio);
 #endif /* TTDL_DIAGNOSTICS */
 
 	remove_sysfs_interfaces(dev);

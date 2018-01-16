@@ -89,7 +89,6 @@ struct pt_loader_data {
 	struct completion int_running;
 	struct completion calibration_complete;
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
-	struct completion builtin_bin_fw_complete;
 	int builtin_bin_fw_status;
 	bool is_manual_upgrade_enabled;
 #endif
@@ -954,7 +953,8 @@ static void _pt_firmware_cont(const struct firmware *fw, void *context)
 		fw->size - (header_size + 1));
 
 pt_firmware_cont_release_exit:
-	release_firmware(fw);
+	if (fw)
+		release_firmware(fw);
 
 pt_firmware_cont_exit:
 	ld->is_manual_upgrade_enabled = 0;
@@ -1036,15 +1036,14 @@ static void _pt_firmware_cont_builtin(const struct firmware *fw,
 	if (upgrade) {
 		_pt_firmware_cont(fw, dev);
 		ld->builtin_bin_fw_status = 0;
-		complete(&ld->builtin_bin_fw_complete);
 		return;
 	}
 
 _pt_firmware_cont_builtin_exit:
-	release_firmware(fw);
+	if (fw)
+		release_firmware(fw);
 
 	ld->builtin_bin_fw_status = -EINVAL;
-	complete(&ld->builtin_bin_fw_complete);
 }
 
 /*******************************************************************************
@@ -1133,8 +1132,10 @@ static char *generate_firmware_filename(struct device *dev)
 static int upgrade_firmware_from_builtin(struct device *dev)
 {
 	struct pt_loader_data *ld = pt_get_loader_data(dev);
+	struct pt_core_data *cd = dev_get_drvdata(dev);
 	char *filename;
 	int retval;
+	const struct firmware *fw_entry = NULL;
 
 	pt_debug(dev, DL_INFO,
 		"%s: Enabling firmware class loader built-in\n",
@@ -1148,18 +1149,18 @@ static int upgrade_firmware_from_builtin(struct device *dev)
 		return -ENOMEM;
 	}
 
-	retval = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
-			filename, dev, GFP_KERNEL, dev,
-			_pt_firmware_cont_builtin);
+	mutex_lock(&cd->firmware_class_lock);
+	retval = request_firmware(&fw_entry, filename, dev);
 	if (retval < 0) {
+		mutex_unlock(&cd->firmware_class_lock);
 		pt_debug(dev, DL_ERROR,
 			"%s: Fail request firmware class file load\n",
 			__func__);
 		goto exit;
 	}
+	_pt_firmware_cont_builtin(fw_entry, dev);
 
-	/* wait until FW binary upgrade finishes */
-	wait_for_completion(&ld->builtin_bin_fw_complete);
+	mutex_unlock(&cd->firmware_class_lock);
 
 	retval = ld->builtin_bin_fw_status;
 
@@ -1947,8 +1948,7 @@ static ssize_t pt_manual_upgrade_store(struct device *dev,
 	return size;
 }
 
-static DEVICE_ATTR(manual_upgrade, S_IWUSR,
-	NULL, pt_manual_upgrade_store);
+static DEVICE_ATTR(manual_upgrade, S_IWUSR, NULL, pt_manual_upgrade_store);
 #endif
 /*******************************************************************************
  * FUNCTION: pt_fw_and_config_upgrade
@@ -2182,7 +2182,6 @@ static void _pt_pip2_firmware_cont(const struct firmware *fw,
 			pt_debug(dev, DL_ERROR,
 				"%s: No builtin firmware\n", __func__);
 			ld->builtin_bin_fw_status = -EINVAL;
-			complete(&ld->builtin_bin_fw_complete);
 		} else {
 			pt_debug(dev, DL_ERROR,
 				"%s: No firmware provided to load\n", __func__);
@@ -2311,14 +2310,15 @@ prepare_upgrade:
 			PIP2_CMD_ID_FILE_IOCTL, data, 2, read_buf,
 			&actual_read_len);
 		status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
-		if (status) {
+		if (ret || status) {
 			pt_debug(dev, DL_ERROR,
-				"%s error: file erase failure\n", __func__);
+				"%s: File erase failure rc=%d status=%d\n",
+				__func__, ret, status);
 			ret = -1;
 			pip2_bl_status = PIP2_BL_STATUS_ERASE_ERROR;
 			goto exit;
 		}
-		pt_debug(dev, DL_INFO,
+	pt_debug(dev, DL_INFO,
 			"%s File erase successful\n", __func__);
 	}
 
@@ -2326,7 +2326,7 @@ prepare_upgrade:
 		u8 header_size = 0;
 
 		if (!fw)
-			release_firmware(fw);
+			goto pt_firmware_cont_release_exit;
 		if (!fw->data || !fw->size) {
 			pt_debug(dev, DL_ERROR,
 				"%s: No firmware received\n", __func__);
@@ -2603,8 +2603,6 @@ pt_firmware_cont_release_exit:
 	if (wait_for_calibration_complete)
 		wait_for_completion(&ld->calibration_complete);
 
-	if (ld->pip2_load_builtin)
-		complete(&ld->builtin_bin_fw_complete);
 	/*
 	 * Start watchdog, temporarily override the WD interval to 500ms to
 	 * force the WD to fire sooner and therefor re-enumerating the DUT
@@ -2629,37 +2627,34 @@ pt_firmware_cont_release_exit:
 static int pt_pip2_upgrade_firmware_from_builtin(struct device *dev)
 {
 	struct pt_loader_data *ld = pt_get_loader_data(dev);
+	struct pt_core_data *cd = dev_get_drvdata(dev);
+	const struct firmware *fw_entry = NULL;
 	int retval;
 
 	pt_debug(dev, DL_INFO,
 		"%s: Enabling firmware class loader built-in\n", __func__);
 	ld->pip2_load_builtin = true;
 
-#ifdef FUTURE
-	/* Currently this fails and _pt_pip2_firmware_cont gets a NULL FW ptr */
+	mutex_lock(&cd->firmware_class_lock);
+
 	/* Try to load the RAM image first if it exists */
-	retval = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
-			"ttdl_fw_RAM.bin", dev, GFP_KERNEL, dev,
-			_pt_pip2_firmware_cont);
+	retval = request_firmware(&fw_entry, PT_FW_RAM_FILE_NAME, dev);
 	if (retval < 0) {
-#endif
 		ld->pip2_load_fw_to_ram = false;
-		retval = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
-				"ttdl_fw.bin", dev, GFP_KERNEL, dev,
-				_pt_pip2_firmware_cont);
+		retval = request_firmware(&fw_entry, PT_FW_FILE_NAME, dev);
 		if (retval < 0) {
+			mutex_unlock(&cd->firmware_class_lock);
 			pt_debug(dev, DL_ERROR,
 				"%s: Fail request firmware class file load\n",
 				__func__);
 			goto exit;
 		}
-#ifdef FUTURE
 	} else
 		ld->pip2_load_fw_to_ram = true;
-#endif
 
-	/* wait until FW binary upgrade finishes */
-	wait_for_completion(&ld->builtin_bin_fw_complete);
+	_pt_pip2_firmware_cont(fw_entry, dev);
+
+	mutex_unlock(&cd->firmware_class_lock);
 	retval = ld->builtin_bin_fw_status;
 exit:
 	return retval;
@@ -2738,6 +2733,34 @@ static ssize_t pt_pip2_manual_upgrade_store(struct device *dev,
 static DEVICE_ATTR(pip2_manual_upgrade, S_IWUSR,
 	NULL, pt_pip2_manual_upgrade_store);
 
+/*******************************************************************************
+ * FUNCTION: pt_update_fw_store
+ *
+ * SUMMARY: Store method for the update_fw sysfs node. This node is required
+ *	by ChromeOS to first determine if loading is available and then perform
+ *	the loading if required. This function is simply a wrapper to call:
+ *		pt_pip2_manual_upgrade_store - for the TC3XXX or TT7XXX parts
+ *		pt_manual_upgrade_store - for the legacy Gen5/6 devices.
+ *
+ * PARAMETERS:
+ *      *dev   - pointer to device structure
+ *      *attr  - pointer to device attributes
+ *      *buf   - pointer to output buffer
+ *       size   - size of data in buffer
+ ******************************************************************************/
+static ssize_t pt_update_fw_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	u8 dut_gen = cmd->request_dut_generation(dev);
+
+	if (dut_gen == DUT_PIP2_CAPABLE)
+		size = pt_pip2_manual_upgrade_store(dev, attr, buf, size);
+	else if (dut_gen == DUT_PIP1_ONLY)
+		size = pt_manual_upgrade_store(dev, attr, buf, size);
+
+	return size;
+}
+static DEVICE_ATTR(update_fw, S_IWUSR, NULL, pt_update_fw_store);
 
 /*******************************************************************************
  * FUNCTION: pt_pip2_manual_ram_upgrade_store
@@ -2967,7 +2990,7 @@ static ssize_t pt_pip2_bl_status_show(struct device *dev,
 		break;
 	case PIP2_BL_STATUS_MODE_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - Incorrect BL/App mode detected\n",
+			"ERROR: %d - Program complete, Incorrect BL/App mode detected after sentinel\n",
 			pip2_bl_status);
 		break;
 	case PIP2_BL_STATUS_ENTER_BL_ERROR:
@@ -3174,6 +3197,14 @@ static int pt_loader_probe(struct device *dev, void **data)
 		pip2_bl_status = PIP2_BL_STATUS_IDLE;
 
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
+		rc = device_create_file(dev, &dev_attr_update_fw);
+		if (rc) {
+			pt_debug(dev, DL_ERROR,
+				"%s: Error creating update_fw sysfs\n",
+				__func__);
+			goto error_create_update_fw;
+		}
+
 		rc = device_create_file(dev, &dev_attr_pip2_manual_upgrade);
 		if (rc) {
 			pt_debug(dev, DL_ERROR,
@@ -3226,6 +3257,14 @@ static int pt_loader_probe(struct device *dev, void **data)
 #endif
 
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
+		rc = device_create_file(dev, &dev_attr_update_fw);
+		if (rc) {
+			pt_debug(dev, DL_ERROR,
+				"%s: Error creating update_fw sysfs\n",
+				__func__);
+			goto error_create_update_fw_legacy;
+		}
+
 		rc = device_create_file(dev, &dev_attr_manual_upgrade);
 		if (rc) {
 			pt_debug(dev, DL_ERROR,
@@ -3260,9 +3299,7 @@ static int pt_loader_probe(struct device *dev, void **data)
 
 #if PT_FW_UPGRADE
 	init_completion(&ld->int_running);
-#ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
-	init_completion(&ld->builtin_bin_fw_complete);
-#endif
+
 	cmd->subscribe_attention(dev, PT_ATTEN_IRQ, PT_LOADER_NAME,
 		pt_loader_attention, PT_MODE_BOOTLOADER);
 
@@ -3302,6 +3339,7 @@ error_create_config_loading:
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
 	device_remove_file(dev, &dev_attr_manual_upgrade);
 error_create_manual_upgrade:
+error_create_update_fw_legacy:
 #endif
 #ifdef CONFIG_TOUCHSCREEN_PARADE_PLATFORM_FW_UPGRADE
 	device_remove_file(dev, &dev_attr_forced_upgrade);
@@ -3317,6 +3355,8 @@ error_create_pip2_flash_erase:
 error_create_pip2_manual_ram_upgrade:
 	device_remove_file(dev, &dev_attr_pip2_manual_upgrade);
 error_create_pip2_manual_upgrade:
+	device_remove_file(dev, &dev_attr_update_fw);
+error_create_update_fw:
 #endif
 	kfree(ld->pip2_data);
 
@@ -3355,10 +3395,11 @@ static void pt_loader_release(struct device *dev, void *data)
 #ifdef CONFIG_TOUCHSCREEN_PARADE_MANUAL_TTCONFIG_UPGRADE
 		device_remove_bin_file(dev, &bin_attr_config_data);
 		device_remove_file(dev, &dev_attr_config_loading);
-	if (!ld->config_data)
-		kfree(ld->config_data);
+		if (!ld->config_data)
+			kfree(ld->config_data);
 #endif
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
+		device_remove_file(dev, &dev_attr_update_fw);
 		device_remove_file(dev, &dev_attr_manual_upgrade);
 #endif
 #ifdef CONFIG_TOUCHSCREEN_PARADE_PLATFORM_FW_UPGRADE
@@ -3371,6 +3412,7 @@ static void pt_loader_release(struct device *dev, void *data)
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
 		device_remove_file(dev, &dev_attr_pip2_manual_ram_upgrade);
 		device_remove_file(dev, &dev_attr_pip2_manual_upgrade);
+		device_remove_file(dev, &dev_attr_update_fw);
 #endif
 		kfree(ld->pip2_data);
 	}

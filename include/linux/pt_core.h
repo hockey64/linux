@@ -41,9 +41,9 @@
 
 #define PT_DRIVER_NAME TTDL
 #define PT_DRIVER_MAJOR 04
-#define PT_DRIVER_MINOR 00
+#define PT_DRIVER_MINOR 01
 
-#define PT_DRIVER_REVCTRL 910022
+#define PT_DRIVER_REVCTRL 910648
 
 #define PT_DRIVER_VERSION		    \
 __stringify(PT_DRIVER_NAME)		    \
@@ -51,7 +51,7 @@ __stringify(PT_DRIVER_NAME)		    \
 "." __stringify(PT_DRIVER_MINOR)	    \
 "." __stringify(PT_DRIVER_REVCTRL)
 
-#define PT_DRIVER_DATE "20171206"
+#define PT_DRIVER_DATE "20180116"
 
 /* abs settings */
 #define PT_IGNORE_VALUE             -1

@@ -234,7 +234,6 @@ struct pt_device_access_data {
 	int cmcp_threshold_size;
 	bool cmcp_threshold_loading;
 	struct work_struct cmcp_threshold_update;
-	struct completion builtin_cmcp_threshold_complete;
 	int builtin_cmcp_threshold_status;
 	bool is_manual_upgrade_enabled;
 	struct configuration *configs;
@@ -5857,14 +5856,13 @@ static void pt_cmcp_parse_threshold_file(const struct firmware *fw,
 	pt_parse_cmcp_threshold_file_common(dev, &fw->data[0], fw->size);
 
 	dad->builtin_cmcp_threshold_status = 0;
-	complete(&dad->builtin_cmcp_threshold_complete);
 	return;
 
 exit:
-	release_firmware(fw);
+	if (fw)
+		release_firmware(fw);
 
 	dad->builtin_cmcp_threshold_status = -EINVAL;
-	complete(&dad->builtin_cmcp_threshold_complete);
 }
 
 /*******************************************************************************
@@ -5884,6 +5882,8 @@ static void pt_parse_cmcp_threshold_builtin(
 		struct pt_device_access_data,
 		cmcp_threshold_update);
 	struct device *dev = dad->dev;
+	struct pt_core_data *cd = dev_get_drvdata(dev);
+	const struct firmware *fw_entry = NULL;
 	int retval;
 
 	dad->si = cmd->request_sysinfo(dev);
@@ -5899,29 +5899,27 @@ static void pt_parse_cmcp_threshold_builtin(
 		__func__);
 
 	/* Open threshold file */
-	retval = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
-			CMCP_THRESHOLD_FILE_NAME, dev, GFP_KERNEL, dev,
-			pt_cmcp_parse_threshold_file);
+	mutex_lock(&cd->firmware_class_lock);
+	retval = request_firmware(&fw_entry, CMCP_THRESHOLD_FILE_NAME, dev);
 	if (retval < 0) {
 		pt_debug(dev, DL_ERROR,
 			"%s: Failed loading cmcp threshold file, attempting legacy file\n",
 			__func__);
 		/* Try legacy file name */
-		retval = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
-				PT_CMCP_THRESHOLD_FILE_NAME, dev, GFP_KERNEL,
-				dev, pt_cmcp_parse_threshold_file);
+		retval = request_firmware(&fw_entry,
+				PT_CMCP_THRESHOLD_FILE_NAME, dev);
 		if (retval < 0) {
+			mutex_unlock(&cd->firmware_class_lock);
+			dad->builtin_cmcp_threshold_status = -EINVAL;
 			pt_debug(dev, DL_ERROR,
 				"%s: Fail request cmcp threshold class file load\n",
 				__func__);
 			goto exit;
 		}
 	}
+	pt_cmcp_parse_threshold_file(fw_entry, dev);
 
-	/* wait until cmcp threshold upgrade finishes */
-	wait_for_completion(&dad->builtin_cmcp_threshold_complete);
-
-	retval = dad->builtin_cmcp_threshold_status;
+	mutex_unlock(&cd->firmware_class_lock);
 
 exit:
 	return;
@@ -6065,7 +6063,6 @@ static int pt_device_access_probe(struct device *dev, void **data)
 	dad->test_search_array = test_case_search_array;
 	dad->test_executed = 0;
 
-	init_completion(&dad->builtin_cmcp_threshold_complete);
 
 	/* get sysinfo */
 	dad->si = cmd->request_sysinfo(dev);
