@@ -1404,7 +1404,7 @@ static ssize_t pt_flush_i2c(struct pt_core_data *cd, u8 force)
 /*******************************************************************************
  * FUNCTION: pt_hid_send_output_
  *
- * SUMMARY: Send valid data to the DUT
+ * SUMMARY: Send a touch application command to the DUT
  *
  * RETURN:
  *	 0 = success
@@ -4983,7 +4983,7 @@ static int pt_get_hid_descriptor_(struct pt_core_data *cd,
 		 * PT/TT devices no longer support the retrieval of the HID
 		 * descriptor, so the values are hard coded.
 		 */
-		cd->hid_desc.packet_id            = 0xF7;
+		cd->hid_desc.packet_id            = PT_HID_APP_REPORT_ID;
 		cd->hid_desc.report_desc_len      = 230;
 		cd->hid_desc.report_desc_register = 0x0002;
 		cd->hid_desc.input_register       = 0x0003;
@@ -5222,8 +5222,8 @@ EXPORT_SYMBOL_GPL(_pt_request_active_pip_protocol);
  *	The HID_DESC command is supported in Gen5/6 BL and FW as well as
  *	TT/TC FW. The packet ID in the descriptor, however, is unique when
  *	coming form the BL or the FW:
- *		Packet_ID in BL = 0xFF
- *		Packet_ID in FW = 0xF7
+ *		Packet_ID in BL = PT_HID_BL_REPORT_ID (0xFF)
+ *		Packet_ID in FW = PT_HID_APP_REPORT_ID (0xF7)
  *
  * RETURN:
  *	 0 = success
@@ -5256,7 +5256,7 @@ static int _pt_request_dut_generation(struct device *dev)
 			cd->startup_status = STARTUP_STATUS_BL_RESET_SENTINEL;
 			mutex_unlock(&cd->system_lock);
 		}
-	} else if (!rc && cd->hid_desc.packet_id == 0xF7) {
+	} else if (!rc && cd->hid_desc.packet_id == PT_HID_APP_REPORT_ID) {
 		rc = _pt_request_pip2_send_cmd(dev, PT_CORE_CMD_UNPROTECTED,
 			&pip2_cmd, PIP2_CMD_ID_VERSION, NULL, 0, read_buf,
 			&actual_read_len);
@@ -6372,7 +6372,7 @@ static int pt_parse_input(struct pt_core_data *cd)
 	}
 
 #ifdef TTDL_DIAGNOSTICS
-	pt_debug(cd->dev, DL_INFO,
+	pt_debug(cd->dev, DL_DEBUG,
 		"%s: pip2 = %d report_id: 0x%02X, cmd_code: 0x%02X\n",
 		__func__, cd->pip2_prot_active, report_id, (cmd_id & 0x7F));
 #endif /* TTDL_DIAGNOSTICS */
@@ -7307,6 +7307,8 @@ reset:
 					goto reset;
 				goto exit;
 			}
+			/* sleep to allow FW to be launched if available */
+			msleep(120);
 		}
 
 		rc = pt_get_hid_descriptor_(cd, &cd->hid_desc);
@@ -7318,16 +7320,10 @@ reset:
 				goto reset;
 			goto exit;
 		}
-
-		/* Don't set DESC flag if in Gen5/6 BL */
-		if (!cd->hid_desc.packet_id == 0xFF)
-			cd->startup_status |= STARTUP_STATUS_GET_DESC;
 		detected = true;
 
-		cd->mode = pt_get_mode(cd, &cd->hid_desc);
-
-		/* Only valid for legacy DUTs that support panel ID */
 		/* Must be in bootloader mode to get Panel ID */
+		cd->mode = pt_get_mode(cd, &cd->hid_desc);
 		if (cd->mode == PT_MODE_OPERATIONAL) {
 			rc = pt_pip_start_bootloader_(cd);
 			if (rc < 0) {
@@ -7356,12 +7352,29 @@ reset:
 			goto exit;
 		}
 
+		/* sleep to allow FW to be launched if available */
+		msleep(120);
+		rc = pt_get_hid_descriptor_(cd, &cd->hid_desc);
+		if (rc < 0) {
+			pt_debug(cd->dev, DL_ERROR,
+				"%s: Error on getting HID descriptor r=%d\n",
+				__func__, rc);
+			if (try++ < PT_CORE_STARTUP_RETRY_COUNT)
+				goto reset;
+			goto exit;
+		}
+
+		cd->startup_status |= STARTUP_STATUS_GET_DESC;
+
 		cd->mode = pt_get_mode(cd, &cd->hid_desc);
 		if (cd->mode == PT_MODE_BOOTLOADER) {
 			if (try++ < PT_CORE_STARTUP_RETRY_COUNT)
 				goto reset;
 			goto exit;
+		} else {
+			cd->startup_status |= STARTUP_STATUS_GET_DESC;
 		}
+
 		/* Read and store the descriptor lengths */
 		mutex_lock(&cd->system_lock);
 		cd->hid_core.hid_report_desc_len =

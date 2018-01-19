@@ -43,7 +43,7 @@
 #define PT_DRIVER_MAJOR 04
 #define PT_DRIVER_MINOR 01
 
-#define PT_DRIVER_REVCTRL 910648
+#define PT_DRIVER_REVCTRL 910872
 
 #define PT_DRIVER_VERSION		    \
 __stringify(PT_DRIVER_NAME)		    \

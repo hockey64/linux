@@ -138,7 +138,7 @@ enum PT_STARTUP_STATUS {
 	do { \
 		struct pt_core_data *cd_tmp = dev_get_drvdata(dev);\
 		if (cd_tmp->debug_level >= dlevel) {\
-			dev_err(dev, "[%d] "format, dlevel, ##arg);\
+			dev_dbg(dev, "[%d] "format, dlevel, ##arg);\
 		} \
 	} while (0)
 
