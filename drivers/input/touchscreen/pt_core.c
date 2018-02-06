@@ -362,6 +362,7 @@ exit_unlock:
 	return 0;
 }
 
+#ifdef TTDL_DIAGNOSTICS
 /*******************************************************************************
  * FUNCTION: pt_erase_parameter_list
  *
@@ -382,7 +383,7 @@ static int pt_erase_parameter_list(struct pt_core_data *cd)
 
 	spin_lock(&cd->spinlock);
 	list_for_each_entry_safe(pos, temp, &cd->param_list, node) {
-		pt_debug(cd->dev, DL_WARN,
+		pt_debug(cd->dev, DL_INFO,
 			"%s: Parameter Restore List - remove 0x%02x\n",
 			__func__, pos->id);
 		list_del(&pos->node);
@@ -392,6 +393,7 @@ static int pt_erase_parameter_list(struct pt_core_data *cd)
 
 	return 0;
 }
+#endif /* TTDL_DIAGNOSTICS */
 
 /*******************************************************************************
  * FUNCTION: pt_count_parameter_list
@@ -1322,7 +1324,7 @@ static int pt_hid_send_output_user_and_wait_(struct pt_core_data *cd,
 	if (rc)
 		goto error;
 	/*
-	 * PATCH - If it is PIP2 STATUS or VERSION command, set timeout to 20ms.
+	 * PATCH - If it is PIP2 STATUS or VERSION command, set timeout to 500ms
 	 * These PIP2 commands used to test device PIP version and BL/APP mode.
 	 */
 	if ((hid_output->write_buf[0] == 0x01) &&
@@ -1330,7 +1332,7 @@ static int pt_hid_send_output_user_and_wait_(struct pt_core_data *cd,
 	    ((hid_output->write_buf[5] == 0x01) ||
 	     (hid_output->write_buf[5] == 0x07))) {
 		t = wait_event_timeout(cd->wait_q, (cd->hid_cmd_state == 0),
-			msecs_to_jiffies(200));
+			msecs_to_jiffies(500));
 	} else
 		t = wait_event_timeout(cd->wait_q, (cd->hid_cmd_state == 0),
 			msecs_to_jiffies(PT_HID_OUTPUT_USER_TIMEOUT));
@@ -1361,6 +1363,53 @@ exit:
 }
 
 /*******************************************************************************
+ * FUNCTION: pt_check_irq_asserted
+ *
+ * SUMMARY: Checks if the IRQ GPIO is asserted or not. There are times when
+ *	the FW can hold the INT line low ~150us after the read is complete.
+ *	NOTE: if irq_stat is not defined this function will return false
+ *
+ * RETURN:
+ *	true  = IRQ asserted
+ *	false = IRQ not asserted
+ *
+ * PARAMETERS:
+ *      *cd - pointer to core data
+ ******************************************************************************/
+static bool pt_check_irq_asserted(struct pt_core_data *cd)
+{
+#ifdef ENABLE_WORKAROUND_FOR_GLITCH_AFTER_BL_LAUNCH_APP
+	/*
+	 * Workaround for FW defect, CDT165308
+	 * bl_launch app creates a glitch in IRQ line
+	 */
+	if (cd->hid_cmd_state == HID_OUTPUT_BL_LAUNCH_APP + 1
+		&& cd->cpdata->irq_stat) {
+		/*
+		 * in X1S panel and GC1546 panel, the width for the INT
+		 * glitch is about 4us,the normal INT width of response
+		 * will last more than 200us, so use 10us delay
+		 * for distinguish the glitch the normal INT is enough.
+		 */
+		udelay(10);
+	}
+#endif
+	if (cd->cpdata->irq_stat) {
+		if (cd->cpdata->irq_stat(cd->cpdata, cd->dev)
+		    == PT_IRQ_ASSERTED_VALUE) {
+			/* Debounce to allow FW to release INT */
+			usleep_range(200, 300);
+		}
+		if (cd->cpdata->irq_stat(cd->cpdata, cd->dev)
+		    == PT_IRQ_ASSERTED_VALUE)
+			return true;
+		else
+			return false;
+	}
+	return true;
+}
+
+/*******************************************************************************
  * FUNCTION: pt_flush_i2c
  *
  * SUMMARY: Force flushing the I2C bus by reading len bytes or forced 255 bytes
@@ -1369,21 +1418,22 @@ exit:
  * RETURN: Length of bytes read from bus
  *
  * PARAMETERS:
- *      *cd   - pointer to core data
- *      force - <0> Read len first and flush len bytes
- *              <1> Force a read of 255 bytes
+ *      *cd        - pointer to core data
+ *	 flush_type - type of flush
+ *			- PT_FLUSH_I2C_BASED_ON_LEN (two reads)
+ *			- PT_FLUSH_I2C_FULL_256_READ
  ******************************************************************************/
-static ssize_t pt_flush_i2c(struct pt_core_data *cd, u8 force)
+static ssize_t pt_flush_i2c(struct pt_core_data *cd, u8 flush_type)
 {
 	u8 buf[256];
 	u8 len;
 	u8 read_len;
 
-	if (force == 0) {
+	if (flush_type == PT_FLUSH_I2C_BASED_ON_LEN) {
 		i2c_master_recv(to_i2c_client(cd->dev), buf, 2);
 		len = 2 + get_unaligned_le16(&buf[0]);
 		pt_debug(cd->dev, DL_INFO,
-			"%s: Forced read of %d bytes...\n", __func__, len);
+			"%s: Flush read of %d bytes...\n", __func__, len);
 		while (len > 0) {
 			if (len > 255)
 				read_len = 255;
@@ -1394,11 +1444,51 @@ static ssize_t pt_flush_i2c(struct pt_core_data *cd, u8 force)
 		}
 	} else {
 		pt_debug(cd->dev, DL_INFO,
-			"%s: Forced read of max 255 bytes...\n", __func__);
+			"%s: Forced flush of max 255 bytes...\n", __func__);
 		i2c_master_recv(to_i2c_client(cd->dev), buf, 255);
 		len =  255;
 	}
 	return len;
+}
+
+/*******************************************************************************
+ * FUNCTION: pt_flush_i2c_if_irq_asserted
+ *
+ * SUMMARY: This function will flush the I2C bus if the INT is found to be
+ *	asserted.
+ *
+ * RETURN: bytes cleared from bus
+ *
+ * PARAMETERS:
+ *	*cd         - pointer the core data structure
+ *	 flush_type - type of flush
+ *			- PT_FLUSH_I2C_BASED_ON_LEN
+ *			- PT_FLUSH_I2C_FULL_256_READ
+ ******************************************************************************/
+static int pt_flush_i2c_if_irq_asserted(struct pt_core_data *cd, u8 flush_type)
+{
+	int count = 0;
+	int bytes_read = 0;
+
+	while (pt_check_irq_asserted(cd) && count < 5) {
+		count++;
+		bytes_read = pt_flush_i2c(cd, flush_type);
+		if (bytes_read) {
+			pt_debug(cd->dev, DL_WARN,
+				"%s: Cleared %d bytes off I2C bus\n",
+				__func__, bytes_read);
+		}
+	}
+	if (pt_check_irq_asserted(cd)) {
+		pt_debug(cd->dev, DL_ERROR,
+			"%s: IRQ still asserted, %d bytes read\n",
+			__func__, bytes_read);
+	} else {
+		pt_debug(cd->dev, DL_INFO,
+			"%s: IRQ cleared, %d bytes read\n",
+			__func__, bytes_read);
+	}
+	return bytes_read;
 }
 
 /*******************************************************************************
@@ -1431,14 +1521,7 @@ static int pt_hid_send_output_(struct pt_core_data *cd,
 	 * If IRQ is already asserted due to a pending report, it must be
 	 * cleared before sending command.
 	 */
-	if (cd->cpdata->irq_stat &&
-	    cd->cpdata->irq_stat(cd->cpdata, cd->dev) ==
-	    PT_IRQ_ASSERTED_VALUE) {
-		pt_flush_i2c(cd, 0);
-		pt_debug(cd->dev, DL_INFO,
-			"%s: IRQ asserted before write, forced clear\n",
-			__func__);
-	}
+	pt_flush_i2c_if_irq_asserted(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 #endif
 
 	switch (hid_output->cmd_type) {
@@ -1597,7 +1680,7 @@ static int pt_pip_null_(struct pt_core_data *cd)
 }
 
 /*******************************************************************************
- * FUNCTION: pt_hid_cmd_set_power
+ * FUNCTION: pt_pip_null
  *
  * SUMMARY: Wrapper function for pt_pip_null_ that guarantees exclusive access.
  *
@@ -4866,13 +4949,6 @@ static int _pt_request_pip2_send_cmd(struct device *dev,
 
 	memset(pip2_cmd, 0, sizeof(struct pip2_cmd_structure));
 
-	/*
-	 * All PIP2 commands come through this function.
-	 * Set flag for PIP2.x interface to allow response parsing to know
-	 * how to decode the protocol header.
-	 */
-	cd->pip2_prot_active = 1;
-
 	/* Hard coded register for PIP2.x */
 	pip2_cmd->reg[0] = 0x01;
 	pip2_cmd->reg[1] = 0x01;
@@ -4928,6 +5004,13 @@ static int _pt_request_pip2_send_cmd(struct device *dev,
 		"%s cmd_id[0x%02X] expected response length:%d ",
 		__func__, pip2_cmd->id, read_len);
 
+	/*
+	 * All PIP2 commands come through this function.
+	 * Set flag for PIP2.x interface to allow response parsing to know
+	 * how to decode the protocol header.
+	 */
+	cd->pip2_prot_active = true;
+
 	if (protect == PT_CORE_CMD_PROTECTED)
 		rc = pt_hid_output_user_cmd(cd, read_len, read_buf,
 		write_len, write_buf, actual_read_len);
@@ -4945,14 +5028,14 @@ static int _pt_request_pip2_send_cmd(struct device *dev,
 	response_seq = read_buf[PIP2_RESPONSE_SEQ_OFFSET];
 	if ((pip2_cmd->seq & 0x07) != (response_seq & 0x07)) {
 		pt_debug(dev, DL_ERROR,
-			"%s cmd_id[0x%02x] send_seq = 0x%02x, response_seq = 0x%02x\n",
+			"%s cmd[0x%02x] send_seq = 0x%02x, resp_seq = 0x%02x\n",
 			__func__, pip2_cmd->id, pip2_cmd->seq, response_seq);
 		rc = -EINVAL;
 	}
 
 exit:
+	cd->pip2_prot_active = false;
 	kfree(write_buf);
-	cd->pip2_prot_active = 0;
 	return rc;
 }
 
@@ -5003,14 +5086,7 @@ static int pt_get_hid_descriptor_(struct pt_core_data *cd,
 	 * processing. If IRQ is already asserted due to an early touch report
 	 * the report must be cleared before sending command.
 	 */
-	if (cd->cpdata->irq_stat &&
-	    cd->cpdata->irq_stat(cd->cpdata, cd->dev) ==
-	    PT_IRQ_ASSERTED_VALUE) {
-		pt_flush_i2c(cd, 0);
-		pt_debug(cd->dev, DL_INFO,
-			"%s: IRQ asserted before write, forced clear\n",
-			__func__);
-	}
+	pt_flush_i2c_if_irq_asserted(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 
 	/* Read HID descriptor length and version */
 	mutex_lock(&cd->system_lock);
@@ -5161,9 +5237,6 @@ int _pt_request_active_pip_protocol(struct device *dev, int protect,
 		.timeout_ms = PT_HID_OUTPUT_GET_SYSINFO_TIMEOUT,
 	};
 
-	/* PATCH - sleep required as FW is not ready to handle PIP2 cmd */
-	msleep(200);
-
 	rc = _pt_request_pip2_send_cmd(dev, protect, &pip2_cmd,
 		PIP2_CMD_ID_VERSION, NULL, 0, read_buf, &actual_read_len);
 	if (!rc) {
@@ -5189,7 +5262,7 @@ int _pt_request_active_pip_protocol(struct device *dev, int protect,
 		 * command if the pip2 command failed but this cmd could also
 		 * fail if DUT is stuck in bootloader mode.
 		 */
-		pt_debug(dev, DL_WARN,
+		pt_debug(dev, DL_INFO,
 			"%s: PIP2 no response rc = %d, try legacy cmd\n",
 			__func__, rc);
 
@@ -5224,15 +5297,18 @@ EXPORT_SYMBOL_GPL(_pt_request_active_pip_protocol);
  *	coming form the BL or the FW:
  *		Packet_ID in BL = PT_HID_BL_REPORT_ID (0xFF)
  *		Packet_ID in FW = PT_HID_APP_REPORT_ID (0xF7)
+ *	This function will return a modified status if it detects the DUT
+ *	is in the BL. In the case of a Gen5/6 BL, which also sends out a FW
+ *	reset sentinel, the status is "corrected" from a FW to BL sentinel.
  *
  * RETURN:
- *	 0 = success
- *	!0 = failure
+ *	The current generation of DUT detected.
  *
  * PARAMETERS:
- *      *dev     - pointer to device structure
+ *      *dev    - pointer to device structure
+ *      *status - pointer to status bitmask
  ******************************************************************************/
-static int _pt_request_dut_generation(struct device *dev)
+static int _pt_request_dut_generation(struct device *dev, u32 *status)
 {
 	int rc;
 	u8 gen = DUT_UNKNOWN;
@@ -5247,26 +5323,21 @@ static int _pt_request_dut_generation(struct device *dev)
 	mutex_unlock(&cd->system_lock);
 
 	rc = pt_get_hid_descriptor_(cd, &cd->hid_desc);
-	if (!rc && cd->hid_desc.packet_id == 0xFF) {
+	if (!rc && cd->hid_desc.packet_id == PT_HID_BL_REPORT_ID) {
 		gen = DUT_PIP1_ONLY; /* Gen5/6 BL */
 		mode = PT_MODE_BOOTLOADER;
 		/* Special case - FW Sentinel also sent in BL */
-		if (cd->startup_status & STARTUP_STATUS_FW_RESET_SENTINEL) {
-			mutex_lock(&cd->system_lock);
-			cd->startup_status = STARTUP_STATUS_BL_RESET_SENTINEL;
-			mutex_unlock(&cd->system_lock);
-		}
+		if (cd->startup_status & STARTUP_STATUS_FW_RESET_SENTINEL)
+			*status = STARTUP_STATUS_BL_RESET_SENTINEL;
 	} else if (!rc && cd->hid_desc.packet_id == PT_HID_APP_REPORT_ID) {
 		rc = _pt_request_pip2_send_cmd(dev, PT_CORE_CMD_UNPROTECTED,
 			&pip2_cmd, PIP2_CMD_ID_VERSION, NULL, 0, read_buf,
 			&actual_read_len);
-		if (!rc) {
+		mode = PT_MODE_OPERATIONAL;
+		if (!rc)
 			gen = DUT_PIP2_CAPABLE; /* TT/TC FW */
-			mode = PT_MODE_OPERATIONAL;
-		} else {
+		else
 			gen = DUT_PIP1_ONLY; /* Gen5/6 FW */
-			mode = PT_MODE_OPERATIONAL;
-		}
 	} else if (rc) {
 		rc = _pt_request_pip2_send_cmd(dev, PT_CORE_CMD_UNPROTECTED,
 			&pip2_cmd, PIP2_CMD_ID_VERSION, NULL, 0, read_buf,
@@ -5274,6 +5345,7 @@ static int _pt_request_dut_generation(struct device *dev)
 		if (!rc) {
 			gen = DUT_PIP2_CAPABLE; /* TT/TC BL */
 			mode = PT_MODE_BOOTLOADER;
+			*status = STARTUP_STATUS_BL_RESET_SENTINEL;
 		}
 	}
 
@@ -5377,7 +5449,9 @@ static int pt_hw_soft_reset(struct pt_core_data *cd, int protect)
 			return rc;
 	}
 
+	mutex_lock(&cd->system_lock);
 	cd->startup_status = STARTUP_STATUS_START;
+	mutex_unlock(&cd->system_lock);
 	if (protect)
 		rc = pt_hid_cmd_reset(cd);
 	else
@@ -5387,7 +5461,7 @@ static int pt_hw_soft_reset(struct pt_core_data *cd, int protect)
 			"%s: FAILED to execute SOFT reset\n", __func__);
 		return rc;
 	}
-	pt_debug(cd->dev, DL_WARN, "%s: SOFT reset successful\n",
+	pt_debug(cd->dev, DL_INFO, "%s: SOFT reset successful\n",
 		__func__);
 	if (wd_state)
 		pt_start_wd_timer(cd);
@@ -5418,8 +5492,6 @@ static int pt_hw_hard_reset(struct pt_core_data *cd)
 	if (wd_state)
 		pt_stop_wd_timer(cd);
 	if (cd->cpdata->xres) {
-		pt_debug(cd->dev, DL_WARN,
-			"%s: Reset Startup Status bitmask\n", __func__);
 		cd->startup_status = STARTUP_STATUS_START;
 		cd->cpdata->xres(cd->cpdata, cd->dev);
 		pt_debug(cd->dev, DL_WARN, "%s: executed HARD reset\n",
@@ -5453,7 +5525,7 @@ static int pt_dut_reset(struct pt_core_data *cd, int protect)
 {
 	int rc;
 
-	pt_debug(cd->dev, DL_WARN, "%s: reset hw...\n", __func__);
+	pt_debug(cd->dev, DL_INFO, "%s: reset hw...\n", __func__);
 	mutex_lock(&cd->system_lock);
 	cd->hid_reset_cmd_state = 1;
 	rc = pt_hw_hard_reset(cd);
@@ -6283,8 +6355,10 @@ static int pt_parse_input(struct pt_core_data *cd)
 		touch_report = false;
 		cd->hw_detected = true;
 		if (size == 0) {
+			mutex_lock(&cd->system_lock);
 			cd->startup_status = STARTUP_STATUS_FW_RESET_SENTINEL;
 			cd->pip2_prot_active = false;
+			mutex_unlock(&cd->system_lock);
 			pt_debug(cd->dev, DL_WARN,
 				"%s: FW Sentinel - %s(%d) %s(%d)\n", __func__,
 				"hid_cmd_state", cd->hid_cmd_state,
@@ -6303,13 +6377,15 @@ static int pt_parse_input(struct pt_core_data *cd)
 
 		} else {
 			/* Sentinel must be from TT/TC BL */
-			cd->pip2_prot_active = 1;
+			mutex_lock(&cd->system_lock);
+			cd->pip2_prot_active = true;
 			cd->startup_status = STARTUP_STATUS_BL_RESET_SENTINEL;
+			mutex_unlock(&cd->system_lock);
 			pt_debug(cd->dev, DL_WARN,
 				"%s: BL Reset sentinel recieved\n", __func__);
 		}
-		memcpy(cd->response_buf, cd->input_buf, 2);
 		mutex_lock(&cd->system_lock);
+		memcpy(cd->response_buf, cd->input_buf, 2);
 		if (!cd->hid_reset_cmd_state && !cd->hid_cmd_state) {
 			mutex_unlock(&cd->system_lock);
 			pt_debug(cd->dev, DL_WARN,
@@ -6345,8 +6421,8 @@ static int pt_parse_input(struct pt_core_data *cd)
 		pt_debug(cd->dev, DL_DEBUG,
 			"%s: Decode PIP2.x Response\n", __func__);
 		if (cd->pip2_cmd_tag_seq != (cd->input_buf[2] & 0x0F)) {
-			pt_debug(cd->dev, DL_WARN,
-				"%s: ###PIP2 SEQ ERR: cmd=0x%02X rsp=0x%02X\n",
+			pt_debug(cd->dev, DL_ERROR,
+				"%s: ###PIP2 SEQ ERR: cmd=0x%04X rsp=0x%04X\n",
 				__func__, cd->pip2_cmd_tag_seq,
 				(cd->input_buf[2] & 0x0F));
 		}
@@ -6359,8 +6435,8 @@ static int pt_parse_input(struct pt_core_data *cd)
 		resp_crc |= cd->input_buf[size - 1];
 		if (resp_crc != calc_crc) {
 			pt_debug(cd->dev, DL_ERROR,
-				"%s: ###PIP2 CRC ERR: rsp=0x%04X calc=0x%04X\n",
-				__func__, resp_crc, calc_crc);
+				"%s: ###PIP2 CRC ERR: calc=0x%04X rsp=0x%04X\n",
+				__func__, calc_crc, resp_crc);
 #ifdef TTDL_DIAGNOSTICS
 			cd->i2c_crc_error_count++;
 			/* TODO - Add retry read */
@@ -6470,48 +6546,6 @@ read:
 
 read_exit:
 	return rc;
-}
-
-/*******************************************************************************
- * FUNCTION: pt_check_irq_asserted
- *
- * SUMMARY: Checks if the IRQ GPIO is asserted or not
- *
- * RETURN:
- *	true  = IRQ asserted
- *	false = IRQ not asserted
- *
- * PARAMETERS:
- *      *cd - pointer to core data
- ******************************************************************************/
-static  bool pt_check_irq_asserted(struct pt_core_data *cd)
-{
-#ifdef ENABLE_WORKAROUND_FOR_GLITCH_AFTER_BL_LAUNCH_APP
-	/*
-	 * Workaround for FW defect, CDT165308
-	 * bl_launch app creates a glitch in IRQ line
-	 */
-	if (cd->hid_cmd_state == HID_OUTPUT_BL_LAUNCH_APP + 1
-			&& cd->cpdata->irq_stat){
-		/*
-		 * in X1S panel and GC1546 panel, the width for the INT
-		 * glitch is about 4us,the normal INT width of response
-		 * will last more than 200us, so use 10us delay
-		 * for distinguish the glitch the normal INT is enough.
-		 */
-		udelay(10);
-		if (cd->cpdata->irq_stat &&
-		    cd->cpdata->irq_stat(cd->cpdata, cd->dev)
-			!= PT_IRQ_ASSERTED_VALUE)
-			return false;
-	}
-#else
-	if (cd->cpdata->irq_stat &&
-	    cd->cpdata->irq_stat(cd->cpdata, cd->dev)
-	    != PT_IRQ_ASSERTED_VALUE)
-		return false;
-#endif
-	return true;
 }
 
 /*******************************************************************************
@@ -6874,7 +6908,7 @@ static int _pt_request_pip2_get_mode(struct device *dev, int protect,
 	rc = _pt_request_pip2_send_cmd(dev, protect, &pip2_cmd,
 		PIP2_CMD_ID_STATUS, NULL, 0, read_buf, &actual_read_len);
 
-	pt_debug(dev, DL_WARN, "%s: PIP2 STATUS command rc = %d\n",
+	pt_debug(dev, DL_INFO, "%s: PIP2 STATUS command rc = %d\n",
 		__func__, rc);
 
 	if (rc) {
@@ -6888,12 +6922,14 @@ static int _pt_request_pip2_get_mode(struct device *dev, int protect,
 			pt_debug(dev, DL_WARN,
 				"%s: Flush I2C bus after failed cmd\n",
 				__func__);
-			pt_flush_i2c(cd, 0);
+			pt_flush_i2c_if_irq_asserted(cd,
+				PT_FLUSH_I2C_BASED_ON_LEN);
 		}
 	} else {
 		status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
 		boot = read_buf[PIP2_RESPONSE_BODY_OFFSET] & 0x01;
-		pt_pr_buf(dev, DL_WARN, read_buf, actual_read_len, "Mode");
+		pt_pr_buf(dev, DL_DEBUG, read_buf, actual_read_len,
+			"PIP2 STATUS");
 
 		if (status == PIP2_RSP_ERR_NONE && boot == 0x00)
 			*mode = PT_MODE_BOOTLOADER;
@@ -7021,7 +7057,7 @@ static int _fast_startup(struct pt_core_data *cd)
 
 reset:
 	if (retry != PT_CORE_STARTUP_RETRY_COUNT)
-		pt_debug(cd->dev, DL_WARN, "%s: Retry %d\n",
+		pt_debug(cd->dev, DL_INFO, "%s: Retry %d\n",
 			__func__, PT_CORE_STARTUP_RETRY_COUNT - retry);
 
 	rc = pt_get_hid_descriptor_(cd, &cd->hid_desc);
@@ -7237,8 +7273,8 @@ exit:
 		_pt_get_scan_state(cd, &scan_state);
 		if (scan_state != PT_SCAN_STATE_ACTIVE) {
 			pt_debug(cd->dev, DL_ERROR,
-					"%s: scan state: %d, retry: %d, rc = %d\n",
-					__func__, scan_state, retry, rc);
+				"%s: scan state: %d, retry: %d, rc = %d\n",
+				__func__, scan_state, retry, rc);
 			goto error_resume_scan;
 		}
 	}
@@ -7246,7 +7282,7 @@ exit:
 }
 
 /*******************************************************************************
- * FUNCTION: pt_startup_
+ * FUNCTION: pt_enum_with_dut_
  *
  * SUMMARY: This function does the full enumeration of the DUT with TTDL.
  *	The core data (cd) startup_status will store, as a bitmask, each
@@ -7260,14 +7296,14 @@ exit:
  * PARAMETERS:
  *	*cd    - pointer the core data structure
  *	 reset - Flag to reset the DUT before attempting to enumerate
+ *	*status - poionter to store the enum status bitmask flags
  ******************************************************************************/
-static int pt_startup_(struct pt_core_data *cd, bool reset)
+static int pt_enum_with_dut_(struct pt_core_data *cd, bool reset, u32 *status)
 {
 	int try = 1;
-	int rc;
-	int count = 0;
-	int bytes_read;
+	int rc = 0;
 	bool detected = false;
+	u32 enum_status = 0;
 	u8 mode = PT_MODE_UNKNOWN;
 
 
@@ -7277,19 +7313,12 @@ static int pt_startup_(struct pt_core_data *cd, bool reset)
 	pt_stop_wd_timer(cd);
 
 reset:
-	pt_debug(cd->dev, DL_WARN, "%s: DUT Enum Attempt %d\n", __func__, try);
+	if (try > 1)
+		pt_debug(cd->dev, DL_WARN, "%s: DUT Enum Attempt %d\n",
+			__func__, try);
 
-	while (pt_check_irq_asserted(cd) && count < 5) {
-		count++;
-		bytes_read = pt_flush_i2c(cd, 0);
-		if (bytes_read) {
-			pt_debug(cd->dev, DL_WARN,
-				"%s: Cleared %d bytes off I2C bus\n",
-				__func__, bytes_read);
-		}
-	}
-
-	_pt_request_dut_generation(cd->dev);
+	pt_flush_i2c_if_irq_asserted(cd, PT_FLUSH_I2C_BASED_ON_LEN);
+	_pt_request_dut_generation(cd->dev, &enum_status);
 	if (cd->dut_generation == DUT_PIP1_ONLY) {
 		if (reset || try != PT_CORE_STARTUP_RETRY_COUNT) {
 			/*
@@ -7364,7 +7393,7 @@ reset:
 			goto exit;
 		}
 
-		cd->startup_status |= STARTUP_STATUS_GET_DESC;
+		enum_status |= STARTUP_STATUS_GET_DESC;
 
 		cd->mode = pt_get_mode(cd, &cd->hid_desc);
 		if (cd->mode == PT_MODE_BOOTLOADER) {
@@ -7372,7 +7401,7 @@ reset:
 				goto reset;
 			goto exit;
 		} else {
-			cd->startup_status |= STARTUP_STATUS_GET_DESC;
+			enum_status |= STARTUP_STATUS_GET_DESC;
 		}
 
 		/* Read and store the descriptor lengths */
@@ -7386,13 +7415,15 @@ reset:
 		mutex_unlock(&cd->system_lock);
 
 		cd->mode = pt_get_mode(cd, &cd->hid_desc);
-		if (cd->mode == PT_MODE_OPERATIONAL)
+		if (cd->mode == PT_MODE_OPERATIONAL) {
 			pt_debug(cd->dev, DL_INFO,
 				"%s: Operational mode\n", __func__);
-		else if (cd->mode == PT_MODE_BOOTLOADER)
+		} else if (cd->mode == PT_MODE_BOOTLOADER) {
 			pt_debug(cd->dev, DL_INFO,
 				"%s: Bootloader mode\n", __func__);
-		else if (cd->mode == PT_MODE_UNKNOWN) {
+			rc = -ENODEV;
+			goto exit;
+		} else if (cd->mode == PT_MODE_UNKNOWN) {
 			pt_debug(cd->dev, DL_ERROR,
 				"%s: Unknown mode\n", __func__);
 			rc = -ENODEV;
@@ -7400,20 +7431,23 @@ reset:
 				goto reset;
 			goto exit;
 		}
-		cd->startup_status |= STARTUP_STATUS_GET_MODE;
+		enum_status |= STARTUP_STATUS_GET_MODE;
 	} else {
 		/* Generation is PIP2 Capable */
 		_pt_request_pip2_get_mode(cd->dev, PT_CORE_CMD_UNPROTECTED,
 					&mode);
 		cd->mode = mode;
-		if (cd->mode == PT_MODE_OPERATIONAL)
+		if (cd->mode == PT_MODE_OPERATIONAL) {
 			pt_debug(cd->dev, DL_INFO,
 				"%s: Operational mode\n", __func__);
-		/* TODO: Maybe need exit bootloader command*/
-		else if (cd->mode == PT_MODE_BOOTLOADER)
+		/* TODO: Enhance with exit bootloader command */
+		} else if (cd->mode == PT_MODE_BOOTLOADER) {
+			detected = true;
 			pt_debug(cd->dev, DL_INFO,
 				"%s: Bootloader mode\n", __func__);
-		else if (cd->mode == PT_MODE_UNKNOWN) {
+			rc = -ENODEV;
+			goto exit;
+		} else if (cd->mode == PT_MODE_UNKNOWN) {
 			pt_debug(cd->dev, DL_ERROR,
 				"%s: Unknown mode\n", __func__);
 			rc = -ENODEV;
@@ -7421,13 +7455,13 @@ reset:
 				goto reset;
 			goto exit;
 		}
-		cd->startup_status |= STARTUP_STATUS_GET_DESC;
-		cd->startup_status |= STARTUP_STATUS_GET_MODE;
+		enum_status |= STARTUP_STATUS_GET_DESC;
+		enum_status |= STARTUP_STATUS_GET_MODE;
 		detected = true;
 	}
 
 	pt_init_pip_report_fields(cd);
-	cd->startup_status |= STARTUP_STATUS_GET_RPT_DESC;
+	enum_status |= STARTUP_STATUS_GET_RPT_DESC;
 	if (!cd->features.easywake)
 		cd->easy_wakeup_gesture = PT_CORE_EWG_NONE;
 
@@ -7440,7 +7474,7 @@ reset:
 			goto reset;
 		goto exit;
 	}
-	cd->startup_status |= STARTUP_STATUS_GET_SYS_INFO;
+	enum_status |= STARTUP_STATUS_GET_SYS_INFO;
 
 	pt_debug(cd->dev, DL_INFO, "%s pt Prot Version: %d.%d\n",
 			__func__,
@@ -7466,7 +7500,7 @@ reset:
 			goto reset;
 		goto exit;
 	} else
-		cd->startup_status |= STARTUP_STATUS_GET_CFG_CRC;
+		enum_status |= STARTUP_STATUS_GET_CFG_CRC;
 
 	rc = pt_restore_parameters_(cd);
 	if (rc) {
@@ -7474,10 +7508,9 @@ reset:
 			"%s: Failed to restore parameters rc=%d\n",
 			__func__, rc);
 	} else
-		cd->startup_status |= STARTUP_STATUS_RESTORE_PARM;
+		enum_status |= STARTUP_STATUS_RESTORE_PARM;
 
 	call_atten_cb(cd, PT_ATTEN_STARTUP, 0);
-	cd->startup_status |= STARTUP_STATUS_COMPLETE;
 	cd->watchdog_interval = PT_WATCHDOG_TIMEOUT;
 	cd->startup_retry_count = 0;
 
@@ -7491,14 +7524,21 @@ exit:
 	tthe_print(cd, NULL, 0, "exit startup");
 #endif
 
+	mutex_lock(&cd->system_lock);
+	*status = enum_status;
+	mutex_unlock(&cd->system_lock);
+
+	pt_debug(cd->dev, DL_WARN,
+		"%s: Completed Enumeration rc=%d On Attempt %d\n",
+		__func__, rc, try);
 	return rc;
 }
 
 /*******************************************************************************
- * FUNCTION: pt_startup
+ * FUNCTION: pt_enum_with_dut
  *
- * SUMMARY: This is the safe function wrapper for pt_startup_() by requesting
- *	exclusive access around the call.
+ * SUMMARY: This is the safe function wrapper for pt_enum_with_dut_() by
+ *	requesting exclusive access around the call.
  *
  * RETURN:
  *	 0 = success
@@ -7507,8 +7547,9 @@ exit:
  * PARAMETERS:
  *	*cd    - pointer the core data structure
  *	 reset - Flag to reset the DUT before attempting to enumerate
+ *	*status - poionter to store the enum status bitmask flags
  ******************************************************************************/
-static int pt_startup(struct pt_core_data *cd, bool reset)
+static int pt_enum_with_dut(struct pt_core_data *cd, bool reset, u32 *status)
 {
 	int rc;
 
@@ -7524,7 +7565,7 @@ static int pt_startup(struct pt_core_data *cd, bool reset)
 		goto exit;
 	}
 
-	rc = pt_startup_(cd, reset);
+	rc = pt_enum_with_dut_(cd, reset, status);
 
 	if (release_exclusive(cd, cd->dev) < 0)
 		/* Don't return fail code, mode is already changed. */
@@ -7547,6 +7588,7 @@ exit:
 }
 
 static int add_sysfs_interfaces(struct device *dev);
+static void remove_sysfs_interfaces(struct device *dev);
 /*******************************************************************************
  * FUNCTION: _pt_ttdl_restart
  *
@@ -7562,6 +7604,7 @@ static int add_sysfs_interfaces(struct device *dev);
 static int _pt_ttdl_restart(struct device *dev)
 {
 	int rc;
+	u32 status;
 	struct pt_core_data *cd = dev_get_drvdata(dev);
 #ifdef CONFIG_TOUCHSCREEN_PARADE_I2C
 	struct i2c_client *client =
@@ -7593,8 +7636,8 @@ static int _pt_ttdl_restart(struct device *dev)
 		goto ttdl_no_error;
 #endif
 
-	pt_debug(dev, DL_INFO, "%s: Call pt_startup\n", __func__);
-	rc = pt_startup(cd, true);
+	pt_debug(dev, DL_INFO, "%s: Call pt_enum_with_dut\n", __func__);
+	rc = pt_enum_with_dut(cd, true, &status);
 	if (rc < 0)
 		goto ttdl_error_startup;
 
@@ -7612,20 +7655,22 @@ static int _pt_ttdl_restart(struct device *dev)
 		goto ttdl_error_startup_mt;
 	}
 
-	if (!cd->sysfs_nodes_created && cd->hw_detected) {
+	remove_sysfs_interfaces(cd->dev);
+	if (cd->hw_detected) {
 		pt_debug(cd->dev, DL_INFO,
 			"%s: Adding sysfs interfaces\n", __func__);
+		if (cd->dut_generation == DUT_UNKNOWN)
+			_pt_request_dut_generation(cd->dev, &status);
 		rc = add_sysfs_interfaces(cd->dev);
 		if (rc < 0)
 			pt_debug(cd->dev, DL_ERROR,
-				"%s: Error, fail sysfs init\n",
-				__func__);
+				"%s: Error, fail sysfs init\n", __func__);
 		else
 			pt_start_wd_timer(cd);
 	}
 
 	pt_debug(cd->dev, DL_WARN,
-			"%s: Well Done! TTDL Restart Successfull\n", __func__);
+		"%s: Well Done! TTDL Enumeration Successfull\n", __func__);
 	rc = 0;
 	goto ttdl_no_error;
 
@@ -7637,6 +7682,12 @@ ttdl_error_startup:
 	pm_runtime_disable(dev);
 ttdl_no_error:
 	mutex_unlock(&cd->ttdl_restart_lock);
+
+	mutex_lock(&cd->system_lock);
+	cd->startup_status |= status;
+	cd->startup_status |= STARTUP_STATUS_COMPLETE;
+	mutex_unlock(&cd->system_lock);
+
 	pm_runtime_put(dev);
 	return rc;
 }
@@ -7645,7 +7696,7 @@ ttdl_no_error:
  * FUNCTION: pt_startup_work_function
  *
  * SUMMARY: This is the wrapper function placed in a work queue to call
- *	pt_startup()
+ *	_pt_ttdl_restart()
  *
  * RETURN: none
  *
@@ -7889,7 +7940,7 @@ static void _pt_request_set_runfw_pin(struct device *dev, int value)
 			else
 				gpio_direction_input(runfw_gpio);
 		}
-		pt_debug(dev, DL_WARN,
+		pt_debug(dev, DL_DEBUG,
 			"%s: Set RunFW GPIO %d to: %d; read %d\n", __func__,
 			runfw_gpio, value, gpio_get_value(runfw_gpio));
 	} else {
@@ -7939,7 +7990,7 @@ int _pt_request_pip2_enter_bl(struct device *dev, u8 *start_mode)
 			"%s: Get mode failed, mode unknown\n", __func__);
 	}
 	*start_mode = mode;
-	pt_debug(dev, DL_WARN, "%s: Get Mode = %d", __func__, mode);
+	pt_debug(dev, DL_INFO, "%s: Get Mode = %d", __func__, mode);
 
 	switch (mode) {
 	case PT_MODE_UNKNOWN:
@@ -7950,7 +8001,7 @@ int _pt_request_pip2_enter_bl(struct device *dev, u8 *start_mode)
 		 * and do a hard reset
 		 */
 		pt_debug(dev, DL_WARN,
-			"%s Set RunFW pin low\n", __func__);
+			"%s DUT Mode Unknown - Set RunFW pin low\n", __func__);
 		_pt_request_set_runfw_pin(dev, 0);
 		rc = pt_dut_reset(cd, PT_CORE_CMD_UNPROTECTED);
 		if (rc)
@@ -7958,7 +8009,7 @@ int _pt_request_pip2_enter_bl(struct device *dev, u8 *start_mode)
 		break;
 
 	case PT_MODE_OPERATIONAL:
-		pt_debug(dev, DL_WARN, "%s: Suspend Scanning\n", __func__);
+		pt_debug(dev, DL_INFO, "%s: Suspend Scanning\n", __func__);
 		rc = pt_pip_suspend_scanning_(cd);
 		if (rc) {
 			/*
@@ -7972,7 +8023,7 @@ int _pt_request_pip2_enter_bl(struct device *dev, u8 *start_mode)
 		/* sleep to allow the suspend scanning to be processed */
 		msleep(PT_PIP2_LAUNCH_BL_DELAY);
 
-		pt_debug(dev, DL_WARN, "%s Set RunFW pin low\n", __func__);
+		pt_debug(dev, DL_INFO, "%s Set RunFW pin low\n", __func__);
 		_pt_request_set_runfw_pin(dev, 0);
 
 		/* Reset device to enter the BL */
@@ -8015,14 +8066,16 @@ int _pt_request_pip2_enter_bl(struct device *dev, u8 *start_mode)
 	/* Ensure device is now in BL mode */
 	rc = _pt_request_pip2_get_mode(dev, PT_CORE_CMD_UNPROTECTED,
 		&mode);
-	pt_debug(dev, DL_WARN, "%s: Get Mode = %d", __func__, mode);
+	pt_debug(dev, DL_INFO, "%s: Get Mode = %d", __func__, mode);
 	if (!rc && mode == PT_MODE_BOOTLOADER) {
 		rc = _pt_request_active_pip_protocol(dev,
 			PT_CORE_CMD_UNPROTECTED,
 			&(cd->bl_pip_version_major),
 			&(cd->bl_pip_version_minor));
-		pt_debug(dev, DL_WARN, "%s In bootloader mode now\n", __func__);
-		cd->pip2_prot_active = 1;
+		pt_debug(dev, DL_INFO, "%s In bootloader mode now\n", __func__);
+		mutex_lock(&cd->system_lock);
+		cd->pip2_prot_active = true;
+		mutex_unlock(&cd->system_lock);
 		result = PT_ENTER_BL_PASS;
 	} else {
 		result = PT_ENTER_BL_CONFIRM_FAIL;
@@ -8063,17 +8116,25 @@ int _pt_pip2_file_open(struct device *dev, u8 file_no)
 	u8  read_buf[10];
 	struct pip2_cmd_structure pip2_cmd;
 
+	pt_debug(dev, DL_DEBUG, "%s: OPEN file %d\n", __func__, file_no);
 	data[0] = file_no;
 	ret = _pt_request_pip2_send_cmd(dev,
 		PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
 		PIP2_CMD_ID_FILE_OPEN, data, 1, read_buf, &actual_read_len);
+	if (ret) {
+		pt_debug(dev, DL_ERROR,
+			"%s ROM BL FILE_OPEN timeout for file = %d\n",
+			__func__, file_no);
+		return -1;
+	}
+
 	status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
 	file_handle = read_buf[PIP2_RESPONSE_BODY_OFFSET];
 	if (ret || ((status != 0x00) && (status != 0x03)) ||
 	    (file_handle != file_no)) {
 		pt_debug(dev, DL_ERROR,
-			"%s File open failure with file = %d\n",
-			__func__, file_handle);
+			"%s ROM BL FILE_OPEN failure: 0x%02X for file = %d\n",
+			__func__, status, file_handle);
 		return -1;
 	}
 	return file_handle;
@@ -8103,15 +8164,69 @@ int _pt_pip2_file_close(struct device *dev, u8 file_handle)
 	u8  read_buf[10];
 	struct pip2_cmd_structure pip2_cmd;
 
+	pt_debug(dev, DL_DEBUG, "%s: CLOSE file %d\n", __func__, file_handle);
 	data[0] = file_handle;
 	ret = _pt_request_pip2_send_cmd(dev,
 		PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
 		PIP2_CMD_ID_FILE_CLOSE, data, 1, read_buf, &actual_read_len);
-	status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
-	if (ret || (status != 0x00)) {
+	if (ret) {
 		pt_debug(dev, DL_ERROR,
-			"%s File close failure with file = %d\n",
+			"%s ROM BL FILE_CLOSE timeout for file = %d\n",
 			__func__, file_handle);
+		return -1;
+	}
+
+	status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
+	if (status != 0x00) {
+		pt_debug(dev, DL_ERROR,
+			"%s ROM BL FILE_CLOSE failure: 0x%02X for file = %d\n",
+			__func__, status, file_handle);
+		return -1;
+	}
+	return file_handle;
+}
+
+/*******************************************************************************
+ * FUNCTION: _pt_pip2_file_erase
+ *
+ * SUMMARY: Using the BL PIP2 commands erase a file
+ *
+ *	NOTE: The DUT must be in BL mode for this command to work
+ *
+ * RETURNS:
+ *	<0 = Error
+ *	>0 = file handle closed
+ *
+ * PARAMETERS:
+ *	*dev         - pointer to device structure
+ *	 file_handle - handle to the file to be erased
+ ******************************************************************************/
+int _pt_pip2_file_erase(struct device *dev, u8 file_handle)
+{
+	int ret = 0;
+	u16 status;
+	u16 actual_read_len;
+	u8  data[2];
+	u8  read_buf[10];
+	struct pip2_cmd_structure pip2_cmd;
+
+	pt_debug(dev, DL_DEBUG, "%s: ERASE file %d\n", __func__, file_handle);
+	data[0] = file_handle;
+	data[1] = PIP2_FILE_IOCTL_CODE_ERASE_FILE;
+	ret = _pt_request_pip2_send_cmd(dev,
+		PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
+		PIP2_CMD_ID_FILE_IOCTL, data, 2, read_buf, &actual_read_len);
+	if (ret) {
+		pt_debug(dev, DL_ERROR,
+			"%s ROM BL FILE_ERASE timeout for file = %d\n",
+			__func__, file_handle);
+		return -1;
+	}
+	status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
+	if (status != 0x00) {
+		pt_debug(dev, DL_ERROR,
+			"%s ROM BL FILE_ERASE failure: 0x%02X for file = %d\n",
+			__func__, status, file_handle);
 		return -1;
 	}
 	return file_handle;
@@ -8546,6 +8661,9 @@ static struct pt_core_nonhid_cmd _pt_core_nonhid_cmd = {
 	.verify_app_integrity = _pt_request_pip_bl_verify_app_integrity,
 	.get_panel_id         = _pt_request_pip_bl_get_panel_id,
 	.pip2_send_cmd        = _pt_request_pip2_send_cmd,
+	.pip2_file_open       = _pt_pip2_file_open,
+	.pip2_file_close      = _pt_pip2_file_close,
+	.pip2_file_erase      = _pt_pip2_file_erase,
 };
 
 static struct pt_core_commands _pt_core_commands = {
@@ -8673,7 +8791,7 @@ static void pt_probe_modules(struct pt_core_data *cd)
 
 	mutex_lock(&module_list_lock);
 	list_for_each_entry(m, &module_list, node) {
-		pt_debug(cd->dev, DL_ERROR, "%s: Probe module %s\n",
+		pt_debug(cd->dev, DL_WARN, "%s: Probe module %s\n",
 			__func__, m->name);
 		rc = pt_probe_module(cd, m);
 		if (rc)
@@ -8937,8 +9055,8 @@ static void pt_setup_early_suspend(struct pt_core_data *cd)
 /*******************************************************************************
  * FUNCTION: fb_notifier_callback
  *
- * SUMMARY: Call back function for fb notifier to allow to call resume/suspend
- *  attention list.
+ * SUMMARY: Call back function for FrameBuffer notifier to allow to call
+ * resume/suspend attention list.
  *
  * RETURN:
  *   0 = success
@@ -9185,9 +9303,7 @@ static void pt_watchdog_work(struct work_struct *work)
 			msecs_to_jiffies(cd->watchdog_interval));
 	}
 
-	if (cd->cpdata->irq_stat &&
-	    cd->cpdata->irq_stat(cd->cpdata, cd->dev) ==
-		PT_IRQ_ASSERTED_VALUE) {
+	if (pt_check_irq_asserted(cd)) {
 		pt_debug(cd->dev, DL_WARN,
 			"%s: TTDL WD found IRQ asserted, attempt to clear\n",
 			__func__);
@@ -9197,7 +9313,7 @@ static void pt_watchdog_work(struct work_struct *work)
 #endif /* TTDL_DIAGNOSTICS */
 		if (cd->wd_corrective_action == 1) {
 			/* Do a flush based on the 2 byte read length */
-			pt_flush_i2c(cd, 0);
+			pt_flush_i2c(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 		}
 	}
 
@@ -9264,7 +9380,7 @@ queue_startup:
 			 * that doesn't match the current DUT should give
 			 * up trying and give up using the bus.
 			 */
-			pt_debug(cd->dev, DL_WARN,
+			pt_debug(cd->dev, DL_INFO,
 				"%s: Resetting startup_retry_count\n",
 				__func__);
 			cd->startup_retry_count = 0;
@@ -9538,15 +9654,16 @@ static ssize_t pt_hw_reset_store(struct device *dev,
 	struct pt_core_data *cd = dev_get_drvdata(dev);
 	int rc;
 
+	/* Only allow DUT reset if no active BL in progress */
+	mutex_lock(&cd->firmware_class_lock);
 	rc = pt_dut_reset(cd, PT_CORE_CMD_PROTECTED);
 	if (rc < 0)
 		goto error_reset;
 
 	msleep(300);
 
-	rc = pt_startup(cd, true);
-	if (rc < 0)
-		goto error_reset;
+	pt_queue_startup(cd);
+	mutex_unlock(&cd->firmware_class_lock);
 
 	pt_start_wd_timer(cd);
 	return size;
@@ -10069,10 +10186,21 @@ static ssize_t pt_drv_debug_store(struct device *dev,
 		mutex_lock(&cd->system_lock);
 		pt_debug(dev, DL_INFO, "%s: TTDL: Flush I2C Bus\n", __func__);
 		if (input_data[1] == 0)
-			pt_flush_i2c(cd, 0);
+			pt_flush_i2c(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 		else
-			pt_flush_i2c(cd, 1);
+			pt_flush_i2c(cd, PT_FLUSH_I2C_FULL_256_READ);
 		mutex_unlock(&(cd->system_lock));
+		break;
+	case PT_DRV_DBG_SETUP_PWR:
+		pt_debug(dev, DL_INFO, "%s: TTDL: Setup Pwr Rails\n", __func__);
+		if (cd->cpdata->setup_power) {
+			if (input_data[1] == 0)
+				cd->cpdata->setup_power(cd->cpdata,
+					PT_MT_POWER_OFF, cd->dev);
+			else
+				cd->cpdata->setup_power(cd->cpdata,
+					PT_MT_POWER_ON, cd->dev);
+		}
 		break;
 #endif /* TTDL_DIAGNOSTICS */
 	default:
@@ -10153,7 +10281,6 @@ static ssize_t pt_pip2_enter_bl_show(struct device *dev,
 	};
 	return ret;
 }
-#endif /* TTDL_DIAGNOSTICS */
 
 /*******************************************************************************
  * FUNCTION: pt_pip2_bin_hdr_show
@@ -10200,7 +10327,7 @@ static ssize_t pt_pip2_bin_hdr_show(struct device *dev,
 	);
 	return ret;
 }
-static DEVICE_ATTR(pip2_bin_hdr,  S_IRUGO, pt_pip2_bin_hdr_show, NULL);
+#endif /* TTDL_DIAGNOSTICS */
 
 /*******************************************************************************
  * FUNCTION: pt_sleep_status_show
@@ -10582,7 +10709,7 @@ static ssize_t pt_t_refresh_store(struct device *dev,
 
 	retval = kstrtoul(buf, 10, &value);
 	if (retval >= 0) {
-		pt_debug(dev, DL_WARN, "%s: Input value: %lu\n",
+		pt_debug(dev, DL_INFO, "%s: Input value: %lu\n",
 			__func__, value);
 		if (value <= 1000) {
 			cd->t_refresh_total = value;
@@ -10619,6 +10746,7 @@ static ssize_t pt_t_refresh_store(struct device *dev,
 static ssize_t pt_ttdl_restart_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
+	struct pt_core_data *cd = dev_get_drvdata(dev);
 	u32 input_data[2];
 	int length;
 
@@ -10628,9 +10756,7 @@ static ssize_t pt_ttdl_restart_store(struct device *dev,
 		pt_debug(dev, DL_ERROR, "%s: %s failed\n", __func__,
 				"pt_ic_parse_input_dec");
 	}
-	if (_pt_ttdl_restart(dev) != 0)
-		pt_debug(dev, DL_ERROR, "%s: %s failed\n", __func__,
-			"_pt_ttdl_restart()");
+	pt_queue_startup(cd);
 
 	return size;
 }
@@ -10714,7 +10840,7 @@ static ssize_t pt_ttdl_bist_show(struct device *dev,
 	 */
 	while (pt_check_irq_asserted(cd) && count < 5) {
 		count++;
-		bytes_read += pt_flush_i2c(cd, 0);
+		bytes_read += pt_flush_i2c(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 	}
 	if (count > 1 && bytes_read > 0) {
 		/*
@@ -10776,10 +10902,7 @@ bist_tp_xres:
 	pt_debug(dev, DL_INFO, "%s: ----- Start TP_XRES BIST -----", __func__);
 
 	/* Ensure we have nothing pending on the i2c bus */
-	while (pt_check_irq_asserted(cd) && count < 5) {
-		count++;
-		bytes_read += pt_flush_i2c(cd, 0);
-	}
+	pt_flush_i2c_if_irq_asserted(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 
 	/* Perform a hard XRES toggle and wait for reset sentinel */
 	mutex_lock(&cd->system_lock);
@@ -10875,10 +10998,7 @@ bist_tp_xres:
 	pt_debug(dev, DL_INFO, "%s: ----- Start RUN_FW BIST ----", __func__);
 
 	/* Ensure we have nothing pending on the i2c bus */
-	while (pt_check_irq_asserted(cd) && count < 5) {
-		count++;
-		bytes_read += pt_flush_i2c(cd, 0);
-	}
+	pt_flush_i2c_if_irq_asserted(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 
 	/* Assert the RunFW pin to force BL to stay in the BL ROM */
 	_pt_request_set_runfw_pin(dev, 0);
@@ -10894,7 +11014,9 @@ bist_tp_xres:
 	if (IS_TMO(t)) {
 		pt_debug(cd->dev, DL_ERROR,
 			"%s: TMO waiting for DUT enumeration\n", __func__);
-		strcpy(xres_err_str, "- likely open. (No Reset Sentinel)");
+		if (!xres_toggled)
+			strcpy(xres_err_str,
+				"- likely open. (No Reset Sentinel)");
 		goto print_results;
 	}
 
@@ -10963,7 +11085,7 @@ bist_tp_xres:
 		 */
 		if (read_buf[4] == 0 && read_buf[6] == 0x00) {
 			bl_detected_runfw_set = true;
-			pt_debug(dev, DL_WARN,
+			pt_debug(dev, DL_INFO,
 				"%s: BL detected Run_FW aserted\n",
 				__func__);
 		} else {
@@ -10999,15 +11121,15 @@ bist_tp_xres:
 			pt_debug(dev, DL_ERROR,
 				"%s: IRQ found low when RunFW low\n",
 				__func__);
-			pt_flush_i2c(cd, 1);
+			pt_flush_i2c(cd, PT_FLUSH_I2C_FULL_256_READ);
 			if (!pt_check_irq_asserted(cd)) {
-				pt_debug(dev, DL_WARN,
+				pt_debug(dev, DL_INFO,
 					"%s: IRQ released after flush\n",
 					__func__);
 				goto exit_bl;
 			}
 			_pt_request_set_runfw_pin(dev, 0);
-			pt_flush_i2c(cd, 1);
+			pt_flush_i2c(cd, PT_FLUSH_I2C_FULL_256_READ);
 			if (pt_check_irq_asserted(cd)) {
 				strcpy(runfw_err_str,
 					"- likely shorted to IRQ.");
@@ -11038,6 +11160,10 @@ bist_tp_xres:
 	mutex_unlock(&cd->system_lock);
 
 	/* The DUT is in the BL so send a BL RESET command to reset the DUT */
+	mutex_lock(&cd->system_lock);
+	cd->startup_status = STARTUP_STATUS_START;
+	cd->hid_reset_cmd_state = 1;
+	mutex_unlock(&cd->system_lock);
 	rc = _pt_request_pip2_send_cmd(dev, PT_CORE_CMD_PROTECTED,
 		&pip2_cmd, PIP2_CMD_ID_RESET, NULL, 0, read_buf,
 		&actual_read_len);
@@ -11053,9 +11179,14 @@ bist_tp_xres:
 	if (IS_TMO(t)) {
 		pt_debug(cd->dev, DL_ERROR,
 			"%s: TMO waiting for DUT enumeration\n", __func__);
-		strcpy(xres_err_str, "- likely open. (No Reset Sentinel)");
+		if (!xres_toggled)
+			strcpy(xres_err_str,
+				"- likely open. (No Reset Sentinel)");
 		goto print_results;
 	}
+	mutex_lock(&cd->system_lock);
+	cd->hid_reset_cmd_state = 0;
+	mutex_unlock(&cd->system_lock);
 
 
 	/*
@@ -11127,7 +11258,7 @@ exit_bl:
 	 * We're done! - De-assert RunFW pin and perform a hard XRES
 	 * toggle, allowing BL to load FW if there is any in Flash
 	 */
-	pt_debug(dev, DL_WARN,
+	pt_debug(dev, DL_INFO,
 		"%s: TTDL BIST Complete - Final reset\n", __func__);
 	_pt_request_set_runfw_pin(dev, 1);
 	mutex_lock(&cd->system_lock);
@@ -11153,10 +11284,7 @@ print_results:
 	 * the IRQ and in turn the RunFW pin as well.
 	 */
 	_pt_request_set_runfw_pin(dev, 1);
-	while (pt_check_irq_asserted(cd) && count < 5) {
-		count++;
-		bytes_read += pt_flush_i2c(cd, 0);
-	}
+	pt_flush_i2c_if_irq_asserted(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 
 	status = irq_toggled + xres_toggled + runfw_toggled;
 	pt_debug(dev, DL_INFO, "%s: status = %d (%d, %d, %d)\n",
@@ -11320,9 +11448,9 @@ static ssize_t pt_flush_i2c_store(struct device *dev,
 
 	mutex_lock(&cd->system_lock);
 	if (input_data[0] == 0)
-		pt_flush_i2c(cd, 0);
+		pt_flush_i2c(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 	else
-		pt_flush_i2c(cd, 1);
+		pt_flush_i2c(cd, PT_FLUSH_I2C_FULL_256_READ);
 	mutex_unlock(&(cd->system_lock));
 
 	return size;
@@ -11405,27 +11533,17 @@ static ssize_t pt_dut_status_show(struct device *dev,
 	u16 calculated_crc = 0;
 	u16 stored_crc = 0;
 	u8 status;
-	int rc;
+	int rc = 0;
 
 	pt_get_scan_state(cd, &state);
-
-	if (state == PT_SCAN_STATE_ACTIVE) {
-		rc = pt_pip_suspend_scanning_(cd);
-		if (rc)
-			goto print_results;
-	}
+	if (state == PT_SCAN_STATE_ACTIVE)
+		goto print_limited_results;
 
 	rc = pt_pip_verify_config_block_crc_(cd, PT_TCH_PARM_EBID,
 			&status, &calculated_crc, &stored_crc);
-	if (rc) {
-		calculated_crc = 0;
-		stored_crc = 0;
-	}
+	if (rc)
+		goto print_limited_results;
 
-	if (state == PT_SCAN_STATE_ACTIVE)
-		pt_pip_resume_scanning_(cd);
-
-print_results:
 	ret = snprintf(buf, PT_MAX_PRBUF_SIZE,
 		"%s: %d\n"
 		"%s: %s\n"
@@ -11435,6 +11553,18 @@ print_results:
 		"Scan Status    ", outputstring[state],
 		"Stored CRC     ", stored_crc,
 		"Calculated CRC ", calculated_crc);
+	return ret;
+
+print_limited_results:
+	ret = snprintf(buf, PT_MAX_PRBUF_SIZE,
+		"%s: %d\n"
+		"%s: %s\n"
+		"%s: n/a\n"
+		"%s: n/a\n",
+		"status ", rc,
+		"Scan Status    ", outputstring[state],
+		"Stored CRC     ",
+		"Calculated CRC ");
 
 	 return ret;
 }
@@ -11586,7 +11716,6 @@ ver_err:
 		"FW VERSION   : - DUT access error\n"
 		"SILICON ID   : - DUT access error\n");
 }
-static DEVICE_ATTR(pip2_get_version, S_IRUGO, pt_pip2_get_version_show, NULL);
 
 
 /*******************************************************************************
@@ -11697,8 +11826,16 @@ static DEVICE_ATTR(hw_version, S_IRUGO, pt_hw_version_show, NULL);
 
 
 /*******************************************************************************
- * Structure of sysfs attributes for all DUT dependent sysfs node
+ * Structures of sysfs attributes for all DUT dependent sysfs node
  ******************************************************************************/
+static struct device_attribute pip2_attributes[] = {
+	__ATTR(pip2_get_version, S_IRUGO, pt_pip2_get_version_show, NULL),
+#ifdef TTDL_DIAGNOSTICS
+	__ATTR(pip2_enter_bl, S_IRUGO, pt_pip2_enter_bl_show, NULL),
+	__ATTR(pip2_bin_hdr,  S_IRUGO, pt_pip2_bin_hdr_show, NULL),
+#endif
+};
+
 static struct device_attribute attributes[] = {
 	__ATTR(ic_ver, S_IRUGO, pt_ic_ver_show, NULL),
 	__ATTR(hw_reset, S_IWUSR, NULL, pt_hw_reset_store),
@@ -11718,7 +11855,6 @@ static struct device_attribute attributes[] = {
 	__ATTR(get_param, S_IRUGO | S_IWUSR,
 		pt_get_param_show, pt_get_param_store),
 #ifdef TTDL_DIAGNOSTICS
-	__ATTR(pip2_enter_bl, S_IRUGO, pt_pip2_enter_bl_show, NULL),
 	__ATTR(drv_irq, S_IRUGO | S_IWUSR, pt_drv_irq_show, pt_drv_irq_store),
 	__ATTR(hw_irq_stat, S_IRUGO, pt_hw_irq_stat_show, NULL),
 	__ATTR(dut_status, S_IRUGO, pt_dut_status_show, NULL),
@@ -11742,18 +11878,25 @@ static struct device_attribute attributes[] = {
 static int add_sysfs_interfaces(struct device *dev)
 {
 	int i;
+	int j = 0;
 	struct pt_core_data *cd = dev_get_drvdata(dev);
 
-	for (i = 0; i < ARRAY_SIZE(attributes); i++)
+	for (i = 0; i < ARRAY_SIZE(attributes); i++) {
 		if (device_create_file(dev, attributes + i))
 			goto undo;
-	cd->sysfs_nodes_created = true;
-
+	}
+	if (cd->dut_generation == DUT_PIP2_CAPABLE) {
+		for (j = 0; j < ARRAY_SIZE(pip2_attributes); j++) {
+			if (device_create_file(dev, pip2_attributes + j))
+				goto undo;
+		}
+	}
 	return 0;
 undo:
 	for (i--; i >= 0; i--)
 		device_remove_file(dev, attributes + i);
-	cd->sysfs_nodes_created = false;
+	for (j--; j >= 0; j--)
+		device_remove_file(dev, pip2_attributes + j);
 	pt_debug(dev, DL_ERROR, "%s: failed to create sysfs interface\n",
 		__func__);
 	return -ENODEV;
@@ -11771,12 +11914,12 @@ undo:
  ******************************************************************************/
 static void remove_sysfs_interfaces(struct device *dev)
 {
-	u32 i;
-	struct pt_core_data *cd = dev_get_drvdata(dev);
+	int i;
 
-	cd->sysfs_nodes_created = false;
 	for (i = 0; i < ARRAY_SIZE(attributes); i++)
 		device_remove_file(dev, attributes + i);
+	for (i = 0; i < ARRAY_SIZE(pip2_attributes); i++)
+		device_remove_file(dev, pip2_attributes + i);
 }
 
 
@@ -11811,9 +11954,9 @@ int pt_probe(const struct pt_bus_ops *ops, struct device *dev,
 	int rc = 0;
 #ifndef PT_PTSBC_SUPPORT
 	u8 current_dl = PT_INITIAL_DEBUG_LEVEL;
-	u8 buf[256];
 	u8 pip_ver_major;
 	u8 pip_ver_minor;
+	u32 status;
 #endif
 
 	/* Set default static values */
@@ -11852,8 +11995,7 @@ int pt_probe(const struct pt_bus_ops *ops, struct device *dev,
 	cd->show_timestamp             = PT_INITIAL_SHOW_TIME_STAMP;
 	scnprintf(cd->core_id, 20, "%s%d", PT_CORE_NAME, core_number++);
 	cd->hw_detected                = false;
-	cd->sysfs_nodes_created        = false;
-	cd->pip2_prot_active           = 0;
+	cd->pip2_prot_active           = false;
 	cd->bl_pip_version_major       = 0;
 	cd->bl_pip_version_minor       = 0;
 	cd->pip2_cmd_tag_seq           = 0x08; /* PIP2 TAG=1 and 3 bit SEQ=0 */
@@ -11991,7 +12133,7 @@ int pt_probe(const struct pt_bus_ops *ops, struct device *dev,
 	 */
 	if (!cd->cpdata->irq_stat) {
 		cd->irq = irq;
-		pt_debug(cd->dev, DL_WARN, "%s:Set cd->irq = %d\n",
+		pt_debug(cd->dev, DL_WARN, "%s:No irq_stat, Set cd->irq = %d\n",
 			__func__, cd->irq);
 	}
 
@@ -12037,7 +12179,7 @@ error_no_pdata:
 static int pt_probe_complete(struct pt_core_data *cd)
 {
 	int rc = -1;
-	u8 buf[256];
+	u32 status;
 	struct device *dev = cd->dev;
 	u8 current_dl = cd->debug_level;
 	u8 pip_ver_major;
@@ -12128,14 +12270,14 @@ static int pt_probe_complete(struct pt_core_data *cd)
 			goto error_detect;
 		}
 	} else
-		pt_debug(dev, DL_ERROR,
-				"%s: PARADE No HW detect function pointer\n",
-				__func__);
+		pt_debug(dev, DL_WARN,
+			"%s: PARADE No HW detect function pointer\n",
+			__func__);
 
 	rc = pt_setup_irq_gpio(cd);
 	if (rc < 0) {
 		pt_debug(dev, DL_ERROR, "%s: Error, could not setup IRQ\n",
-				__func__);
+			__func__);
 		goto error_setup_irq;
 	}
 
@@ -12156,101 +12298,58 @@ static int pt_probe_complete(struct pt_core_data *cd)
 	pm_runtime_get_noresume(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
-	msleep(100);
 
 	/* If IRQ asserted, read out all from buffer to release INT pin */
-	if (cd->cpdata->irq_stat &&
-	    cd->cpdata->irq_stat(cd->cpdata, cd->dev)
-	     == PT_IRQ_ASSERTED_VALUE) {
-		pt_debug(dev, DL_WARN, "%s: IRQ asserted, clear buffer...\n",
-			__func__);
-		i2c_master_recv(to_i2c_client(cd->dev), buf, 2);
-		i2c_master_recv(to_i2c_client(cd->dev), buf,
-		2 + get_unaligned_le16(&buf[0]));
-		pt_debug(dev, DL_INFO,
-			"%s: Buffer cleared, IRQ deasserted\n", __func__);
+	if (cd->cpdata->irq_stat) {
+		pt_flush_i2c_if_irq_asserted(cd, PT_FLUSH_I2C_BASED_ON_LEN);
 	} else {
-		/*
-		 * With no IRQ Stat, force a read in case the reset sentinel
-		 * already arrieved.
-		 */
+		/* Force a read in case the reset sentinel already arrived */
 		rc = pt_read_input(cd);
 		if (!rc)
 			pt_parse_input(cd);
 	}
 
-	/* Detect what PIP interface version the DUT is communicating in */
-	pt_debug(dev, DL_INFO, "%s: Detect PIP Interface Version...\n",
-		__func__);
+	/* Without sleep DUT is not ready and will NAK the first write */
+	msleep(80);
 
 	_pt_request_active_pip_protocol(cd->dev, PT_CORE_CMD_PROTECTED,
 		&pip_ver_major, &pip_ver_minor);
 	if (pip_ver_major == 2) {
 		cd->bl_pip_version_major = pip_ver_major;
 		cd->bl_pip_version_minor = pip_ver_minor;
-		dev_err(dev, " ======== PIP2.%02X Detected ========\n",
+		pt_debug(dev, DL_WARN,
+			" ==== PIP2.%02X Detected, Skip Enum ====\n",
 			pip_ver_minor);
-
-#ifdef TTDL_DIAGNOSTICS
-		/*
-		 * PM functions should be in pairs in any calling path
-		 * to ensure PM "get" and "put" calling is complete.
-		 * Here it calls pm_runtime_get_noresume() at the beginning
-		 * and it need a "put" function to allow device can enter
-		 * sleep mode for this calling path.
-		 */
-#endif /* TTDL_DIAGNOSTICS */
 		pm_runtime_put_sync(dev);
-
-#ifdef TTDL_DIAGNOSTICS
-		/*
-		 * If the TC3300 comes up with a PIP2.x protocol this
-		 * means either there was no valid FW in the FLASH part, or
-		 * this probe occurred before the BL started executing FW.
-		 * In both cases the DUT is not ready for pt_startup()
-		 * so delay to see if FW comes up.
-		 */
-#endif /* TTDL_DIAGNOSTICS */
 		goto create_sysfs_nodes;
 	} else if (pip_ver_major == 1) {
 		cd->bl_pip_version_major = pip_ver_major;
 		cd->bl_pip_version_minor = pip_ver_minor;
-		dev_err(dev, " ======== PIP1.%02X Detected ========\n",
-			pip_ver_minor);
+		pt_debug(dev, DL_WARN,
+			" ==== PIP1.%02X Detected ====\n", pip_ver_minor);
 	} else {
-		dev_err(dev, " ======== PIP Version Not Retrieved  ========\n");
-		pm_runtime_put_sync(dev);
-		/* goto create_sysfs_nodes; */
+		pt_debug(dev, DL_ERROR,
+			" ==== PIP Version Not Detected, Skip Enum  ====\n");
 	}
-
-	/*
-	 * Call startup directly to ensure that the device is tested
-	 * before leaving the probe
-	 */
-	pt_debug(dev, DL_WARN, "%s: call startup\n", __func__);
-	pt_debug(dev, DL_INFO,
-		"%s: === call Startup Directly, hw_detected = %d ===\n",
-		__func__, cd->hw_detected);
-	rc = pt_startup(cd, false);
 
 	pm_runtime_put_sync(dev);
 
+	rc = pt_enum_with_dut(cd, false, &status);
 	if (rc == -ENODEV) {
 		pt_debug(cd->dev, DL_ERROR,
-			"%s: Fail initial startup r=%d\n", __func__, rc);
+			"%s: Enumeration Failed r=%d\n", __func__, rc);
 #ifndef PT_PTSBC_SUPPORT
 		/* For PtSBC don't error out, allow TTDL to stay up */
 		goto error_after_startup;
 #endif
 	}
 
+	/* Suspend scanning until probe is complete to avoid asyc touches */
+	rc = pt_pip_suspend_scanning_(cd);
+
 create_sysfs_nodes:
-	_pt_request_dut_generation(cd->dev);
-	if (cd->dut_generation == DUT_PIP2_CAPABLE) {
-		device_create_file(dev, &dev_attr_pip2_bin_hdr);
-		device_create_file(dev, &dev_attr_pip2_get_version);
-	}
 	if (cd->hw_detected) {
+		_pt_request_dut_generation(cd->dev, &status);
 		pt_debug(dev, DL_INFO, "%s: Add sysfs interfaces\n",
 			__func__);
 		rc = add_sysfs_interfaces(dev);
@@ -12298,6 +12397,13 @@ create_sysfs_nodes:
 #endif
 	cd->debug_level = current_dl;
 	cd->core_probe_complete = 1;
+	mutex_lock(&cd->system_lock);
+	cd->startup_status |= status;
+	cd->startup_status |= STARTUP_STATUS_COMPLETE;
+	mutex_unlock(&cd->system_lock);
+	rc = pt_pip_resume_scanning_(cd);
+	pt_debug(dev, DL_WARN, "%s: TTDL Core Probe Completed Successfully\n",
+		__func__);
 	return 0;
 
 

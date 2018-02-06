@@ -1,16 +1,18 @@
 /*
  * pt_core.h
- * Parade TrueTouch(TM) Standard Product V5 Core Module.
+ * Parade TrueTouch(TM) Standard Product Core Module.
  * For use with Parade touchscreen controllers.
  * Supported parts include:
- * CYTMA5XX
- * CYTMA448
- * CYTMA445A
- * CYTT21XXX
- * CYTT31XXX
+ * TMA5XX
+ * TMA448
+ * TMA445A
+ * TT21XXX
+ * TT31XXX
+ * TT4XXXX
+ * TT7XXX
+ * TC3XXX
  *
- * Copyright (C) 2015 Parade Semiconductor
- * Copyright (C) 2012-2015 Cypress Semiconductor
+ * Copyright (C) 2015-2018 Parade Technologies
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -22,8 +24,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * Contact Parade Semiconductor at www.parade.com <ttdrivers@paradetech.com>
- *
+ * Contact Parade Technologies at www.parade.com <ttdrivers@paradetech.com>
  */
 
 #ifndef _LINUX_PT_CORE_H
@@ -43,7 +44,7 @@
 #define PT_DRIVER_MAJOR 04
 #define PT_DRIVER_MINOR 01
 
-#define PT_DRIVER_REVCTRL 910872
+#define PT_DRIVER_REVCTRL 912334
 
 #define PT_DRIVER_VERSION		    \
 __stringify(PT_DRIVER_NAME)		    \
@@ -51,7 +52,7 @@ __stringify(PT_DRIVER_NAME)		    \
 "." __stringify(PT_DRIVER_MINOR)	    \
 "." __stringify(PT_DRIVER_REVCTRL)
 
-#define PT_DRIVER_DATE "20180116"
+#define PT_DRIVER_DATE "20180205"
 
 /* abs settings */
 #define PT_IGNORE_VALUE             -1

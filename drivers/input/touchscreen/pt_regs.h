@@ -138,7 +138,10 @@ enum PT_STARTUP_STATUS {
 	do { \
 		struct pt_core_data *cd_tmp = dev_get_drvdata(dev);\
 		if (cd_tmp->debug_level >= dlevel) {\
-			dev_dbg(dev, "[%d] "format, dlevel, ##arg);\
+			if (dlevel == DL_ERROR)\
+				dev_err(dev, "[%d] "format, dlevel, ##arg);\
+			else\
+				dev_dbg(dev, "[%d] "format, dlevel, ##arg);\
 		} \
 	} while (0)
 
@@ -190,6 +193,7 @@ enum PT_STARTUP_STATUS {
 #define PT_HID_GET_HID_DESCRIPTOR_TIMEOUT		500
 #define PT_HID_GET_REPORT_DESCRIPTOR_TIMEOUT		500
 #define PT_HID_SET_POWER_TIMEOUT			500
+#define PT_BL_WAIT_FOR_SENTINEL				500
 #ifdef VERBOSE_DEBUG
 #define PT_HID_OUTPUT_TIMEOUT				2000
 #else
@@ -206,8 +210,10 @@ enum PT_STARTUP_STATUS {
 #define PT_REQUEST_STARTUP_TIMEOUT                      4000
 #define PT_PIP2_LAUNCH_BL_DELAY                         100
 
-#define PT_WATCHDOG_RETRY_COUNT			30
-#define PT_I2C_READ_INPUT_RETRY_COUNT	1
+#define PT_WATCHDOG_RETRY_COUNT		30
+#define PT_I2C_READ_INPUT_RETRY_COUNT	2
+#define PT_FLUSH_I2C_BASED_ON_LEN	0
+#define PT_FLUSH_I2C_FULL_256_READ	1
 
 /* maximum number of concurrent tracks */
 #define TOUCH_REPORT_SIZE           10
@@ -299,6 +305,7 @@ enum PT_STARTUP_STATUS {
 #define PT_DRV_DBG_SHOW_TIMESTAMP		202
 #ifdef TTDL_DIAGNOSTICS
 #define	PT_DRV_DBG_FLUSH_I2C_BUS		204
+#define PT_DRV_DBG_SETUP_PWR                    205
 #define PT_DRV_DBG_WD_CORRECTIVE_ACTION		298
 #define PT_DRV_DBG_VIRTUAL_I2C_DUT		299
 #endif /* TTDL DIAGNOSTICS */
@@ -465,6 +472,20 @@ enum PIP2_CMD_ID {
 	PIP2_CMD_ID_EXIT_HOST_MODE	= 0x18,
 	PIP2_CMD_ID_READ_GPIO		= 0x19,
 };
+
+/* PIP2 Command/Response data and structures */
+enum PIP2_FILE_ID {
+	PIP2_RAM_FILE			= 0x00,
+	PIP2_FW_FILE			= 0x01,
+	PIP2_CONFIG_FILE		= 0x02,
+	PIP2_FILE_3			= 0x03,
+	PIP2_FILE_4			= 0x04,
+	PIP2_FILE_5			= 0x05,
+	PIP2_FILE_6			= 0x06,
+	PIP2_FILE_7			= 0x07,
+};
+
+#define PIP2_FILE_WRITE_LEN_PER_PACKET	245
 
 enum DUT_GENERATION {
 	DUT_UNKNOWN                     = 0x00,
@@ -1054,6 +1075,9 @@ struct pt_core_nonhid_cmd {
 			struct pip2_cmd_structure *pip2_cmd, u8 id, u8 *data,
 			u8 report_body_len, u8 *read_buf, u16 *actual_read_len);
 	int (*get_bl_pip2_version)(struct device *dev);
+	int (*pip2_file_open)(struct device *dev, u8 file_no);
+	int (*pip2_file_close)(struct device *dev, u8 file_no);
+	int (*pip2_file_erase)(struct device *dev, u8 file_no);
 };
 
 typedef int (*pt_atten_func) (struct device *);
@@ -1085,9 +1109,10 @@ struct pt_core_commands {
 	int (*request_pip2_enter_bl)(struct device *dev, u8 *start_mode);
 	int (*request_pip2_bin_hdr)(struct device *dev,
 		struct pt_bin_file_hdr *hdr);
-	int (*request_dut_generation)(struct device *dev);
+	int (*request_dut_generation)(struct device *dev, u32 *status);
 	void (*request_set_runfw_pin)(struct device *dev, int value);
 	struct pt_core_nonhid_cmd *nonhid_cmd;
+
 #ifdef TTHE_TUNER_SUPPORT
 	int (*request_tthe_print)(struct device *dev, u8 *buf, int buf_len,
 			const u8 *data_name);
@@ -1153,7 +1178,6 @@ struct pt_core_data {
 	bool irq_wake;
 	bool irq_disabled;
 	bool hw_detected;
-	bool sysfs_nodes_created;
 	u8 easy_wakeup_gesture;
 #ifdef EASYWAKE_TSG6
 	u8 gesture_id;

@@ -5902,7 +5902,7 @@ static void pt_parse_cmcp_threshold_builtin(
 	mutex_lock(&cd->firmware_class_lock);
 	retval = request_firmware(&fw_entry, CMCP_THRESHOLD_FILE_NAME, dev);
 	if (retval < 0) {
-		pt_debug(dev, DL_ERROR,
+		pt_debug(dev, DL_WARN,
 			"%s: Failed loading cmcp threshold file, attempting legacy file\n",
 			__func__);
 		/* Try legacy file name */
@@ -5911,7 +5911,7 @@ static void pt_parse_cmcp_threshold_builtin(
 		if (retval < 0) {
 			mutex_unlock(&cd->firmware_class_lock);
 			dad->builtin_cmcp_threshold_status = -EINVAL;
-			pt_debug(dev, DL_ERROR,
+			pt_debug(dev, DL_WARN,
 				"%s: Fail request cmcp threshold class file load\n",
 				__func__);
 			goto exit;

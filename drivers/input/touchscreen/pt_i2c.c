@@ -267,11 +267,10 @@ skip_read_len:
 		rc = virt_i2c_master_recv(dev, buf);
 	else
 		rc = i2c_master_recv(client, buf, size);
+	pt_debug(dev, DL_DEBUG, "%s: rc = %d\n", __func__, rc);
 #else
 	rc = i2c_master_recv(client, buf, size);
 #endif
-
-	pt_debug(dev, DL_INFO, "%s: rc = %d\n", __func__, rc);
 	return (rc < 0) ? rc : rc != (int)size ? -EIO : 0;
 }
 
@@ -410,13 +409,13 @@ static int pt_i2c_probe(struct i2c_client *client,
  ******************************************************************************/
 static int pt_i2c_remove(struct i2c_client *client)
 {
-	struct device *dev = &client->dev;
 #ifdef CONFIG_TOUCHSCREEN_PARADE_DEVICETREE_SUPPORT
 	const struct of_device_id *match;
 #endif
 	struct pt_core_data *cd = i2c_get_clientdata(client);
-
 #ifdef TTDL_DIAGNOSTICS
+	struct device *dev = &client->dev;
+
 	device_remove_file(dev, &dev_attr_dut_cmd);
 	device_remove_file(dev, &dev_attr_dut_out);
 #endif

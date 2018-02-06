@@ -111,22 +111,25 @@ static u8   pip2_erase_status;
 
 /* PIP2 BL status codes. 1-99% are "active" */
 enum PIP2_BL_STATUS {
-	PIP2_BL_STATUS_IDLE                 = 0,
-	PIP2_BL_STATUS_ACTIVE_1             = 1,
-	PIP2_BL_STATUS_ACTIVE_99            = 99,
-	PIP2_BL_STATUS_COMPLETE             = 100,
-	PIP2_BL_STATUS_GENERAL_ERROR        = 200,
-	PIP2_BL_STATUS_PIP_VERSION_ERROR    = 201,
-	PIP2_BL_STATUS_FW_VERSION_ERROR     = 202,
-	PIP2_BL_STATUS_ERASE_ERROR          = 203,
-	PIP2_BL_STATUS_FILE_CLOSE_ERROR     = 204,
-	PIP2_BL_STATUS_WRITE_ERROR          = 205,
-	PIP2_BL_STATUS_EXECUTE_ERROR        = 206,
-	PIP2_BL_STATUS_RESET_ERROR          = 207,
-	PIP2_BL_STATUS_MODE_ERROR           = 208,
-	PIP2_BL_STATUS_ENTER_BL_ERROR       = 209,
-	PIP2_BL_STATUS_FILE_OPEN_ERROR      = 210,
-	PIP2_BL_STATUS_FW_SENTINEL_NOT_SEEN = 211,
+	PIP2_BL_STATUS_IDLE                   = 0,
+	PIP2_BL_STATUS_ACTIVE_1               = 1,
+	PIP2_BL_STATUS_ACTIVE_99              = 99,
+	PIP2_BL_STATUS_COMPLETE               = 100,
+	PIP2_BL_STATUS_GENERAL_ERROR          = 200,
+	PIP2_BL_STATUS_PIP_VERSION_ERROR      = 201,
+	PIP2_BL_STATUS_FW_VERSION_ERROR       = 202,
+	PIP2_BL_STATUS_ERASE_ERROR            = 203,
+	PIP2_BL_STATUS_FILE_CLOSE_ERROR       = 204,
+	PIP2_BL_STATUS_WRITE_ERROR            = 205,
+	PIP2_BL_STATUS_EXECUTE_ERROR          = 206,
+	PIP2_BL_STATUS_RESET_ERROR            = 207,
+	PIP2_BL_STATUS_MODE_ERROR             = 208,
+	PIP2_BL_STATUS_ENTER_BL_ERROR         = 209,
+	PIP2_BL_STATUS_FILE_OPEN_ERROR        = 210,
+	PIP2_BL_STATUS_FW_SENTINEL_NOT_SEEN   = 211,
+	PIP2_BL_STATUS_EXCLUSIVE_ACCESS_ERROR = 212,
+	PIP2_BL_STATUS_NO_FW_PROVIDED         = 213,
+	PIP2_BL_STATUS_INVALID_FW_IMAGE       = 214,
 };
 
 struct pt_dev_id {
@@ -1965,8 +1968,10 @@ static void pt_fw_and_config_upgrade(
 	struct pt_loader_data *ld = container_of(fw_and_config_upgrade,
 			struct pt_loader_data, fw_and_config_upgrade);
 	struct device *dev = ld->dev;
-#if (PT_FW_UPGRADE || PT_TTCONFIG_UPGRADE)
-	u8 dut_gen = cmd->request_dut_generation(dev);
+#if PT_FW_UPGRADE \
+	|| defined(CONFIG_TOUCHSCREEN_PARADE_PLATFORM_TTCONFIG_UPGRADE)
+	u32 status = STARTUP_STATUS_START;
+	u8 dut_gen = cmd->request_dut_generation(dev, &status);
 #endif
 	ld->si = cmd->request_sysinfo(dev);
 	if (!ld->si)
@@ -1987,11 +1992,10 @@ static void pt_fw_and_config_upgrade(
 
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
 	if (dut_gen == DUT_PIP2_CAPABLE) {
-		if (!pt_pip2_upgrade_firmware_from_builtin(dev)) {
-			pt_debug(dev, DL_WARN, "%s: Builtin FW upgrade failed",
-				__func__);
+		if (!pt_pip2_upgrade_firmware_from_builtin(dev))
 			return;
-		}
+		pt_debug(dev, DL_WARN, "%s: Builtin FW upgrade failed",
+			__func__);
 	} else {
 		if (!upgrade_firmware_from_builtin(dev))
 			return;
@@ -1999,7 +2003,7 @@ static void pt_fw_and_config_upgrade(
 #endif
 
 #ifdef CONFIG_TOUCHSCREEN_PARADE_PLATFORM_TTCONFIG_UPGRADE
-	if (dut_get == DUT_PIP1_ONLY) {
+	if (dut_gen == DUT_PIP1_ONLY) {
 		if (!upgrade_ttconfig_from_platform(dev))
 			return;
 	}
@@ -2007,6 +2011,7 @@ static void pt_fw_and_config_upgrade(
 }
 
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
+#ifdef TTDL_DIAGNOSTICS
 /*******************************************************************************
  * FUNCTION: _pt_pip2_get_flash_info
  *
@@ -2056,6 +2061,7 @@ static void _pt_pip2_get_flash_info(struct device *dev,
 			read_buf[PIP2_RESPONSE_BODY_OFFSET + 13]);
 	}
 }
+#endif /* TTDL_DIAGNOSTICS */
 
 /*******************************************************************************
  * FUNCTION: _pt_pip2_log_last_error
@@ -2123,6 +2129,57 @@ static void _pt_pip2_log_last_error(struct device *dev,
 }
 
 /*******************************************************************************
+ * FUNCTION: _pt_pip2_need_upgrade_due_to_fw_ver
+ *
+ * SUMMARY: Compare the FW version in the bin file to the current FW. If the
+ *	FW version in the bin file is greater an upgrade should be done.
+ *
+ * PARAMETERS:
+ *	*fw      - pointer to the new FW image to load
+ ******************************************************************************/
+static u8 _pt_pip2_need_upgrade_due_to_fw_ver(struct device *dev,
+	const struct firmware *fw)
+{
+	u8 ret;
+	u8 should_upgrade = 0;
+	u8 img_app_major_ver = fw->data[3];
+	u8 img_app_minor_ver = fw->data[4];
+	u32 img_app_rev_ctrl  = fw->data[9]<<24 | fw->data[10]<<16 |
+			    fw->data[11]<<8 | fw->data[12];
+	struct pt_bin_file_hdr hdr;
+
+	pt_debug(dev, DL_WARN,
+		"%s BL Image Version:   %02x.%02x.%d\n",
+		__func__, img_app_major_ver, img_app_minor_ver,
+		img_app_rev_ctrl);
+
+	ret = cmd->request_pip2_bin_hdr(dev, &hdr);
+	pt_debug(dev, DL_WARN,
+		"%s Current FW Version: %02X.%02X.%d\n",
+		__func__, hdr.fw_major, hdr.fw_minor, hdr.fw_rev_ctrl);
+	if (ret != 0 || hdr.fw_major == 0xFF) {
+		pt_debug(dev, DL_WARN,
+			"App ver info not available, will upgrade FW");
+		should_upgrade = 1;
+		goto exit;
+	}
+
+	if ((256 * img_app_major_ver + img_app_minor_ver) <
+	    (256 * hdr.fw_major + hdr.fw_minor)) {
+		pt_debug(dev, DL_WARN,
+			"bin file version <= FW, will not upgrade FW");
+	} else if (img_app_rev_ctrl <= hdr.fw_rev_ctrl) {
+		pt_debug(dev, DL_WARN,
+			"bin file rev ctrl <= FW, will not upgrade FW");
+	} else {
+		should_upgrade = 1;
+	}
+
+exit:
+	return should_upgrade;
+}
+
+/*******************************************************************************
  * FUNCTION: _pt_pip2_firmware_cont
  *
  * SUMMARY: Bootload the DUT with a FW image using the PIP2 protocol. This
@@ -2132,7 +2189,7 @@ static void _pt_pip2_log_last_error(struct device *dev,
  *
  *	NOTE: Special care must be taken to support a DUT communicating in
  *		PIP2.0 where the length field is defined differently.
- *	NOTE: The len_per_packet is set so that the overall packet size is
+ *	NOTE: The write packet len is set so that the overall packet size is
  *		less than 255. The overhead is 9 bytes: 2 byte address (0101),
  *		4 byte header, 1 byte file no. 2 byte CRC
  *
@@ -2143,39 +2200,29 @@ static void _pt_pip2_log_last_error(struct device *dev,
 static void _pt_pip2_firmware_cont(const struct firmware *fw,
 		void *context)
 {
-	u8 file_handle;
 	u8 read_buf[255];
 	u8 *fw_img = 0;
 	u8 buf[255];
-	u8 len_per_packet = 245;
 	u8 write_len;
-	u8 data[20];
-	u8 img_app_major_ver;
-	u8 img_app_minor_ver;
-	u32 img_app_rev_ctrl;
 	u8 mode;
 	u8 retry_packet = 0;
-	u8 attempt = 0;
+	u8 file;
 	u16 actual_read_len;
 	u16 status;
 	int fw_size = 0;
 	int remain_bytes;
 	int ret = 0;
-	int upgrade;
 	int percent_cmplt;
+	int t;
 	bool wait_for_calibration_complete = false;
 	struct device *dev = context;
 	struct pip2_cmd_structure pip2_cmd;
 	struct pt_loader_data *ld = pt_get_loader_data(dev);
 	struct pip2_loader_data *pip2_data = ld->pip2_data;
 	struct pt_core_data *cd = dev_get_drvdata(dev);
-	struct pt_bin_file_hdr hdr;
 
-	pt_debug(dev, DL_DEBUG, "Entering function %s...\n", __func__);
-
-	/* Loading status start at 1% complete */
-	pip2_bl_status = PIP2_BL_STATUS_ACTIVE_1;
 	pt_debug(dev, DL_WARN, "%s: Begin BL\n", __func__);
+	pip2_bl_status = PIP2_BL_STATUS_ACTIVE_1;
 
 	if (!fw) {
 		if (ld->pip2_load_builtin) {
@@ -2187,307 +2234,246 @@ static void _pt_pip2_firmware_cont(const struct firmware *fw,
 				"%s: No firmware provided to load\n", __func__);
 		}
 		pt_debug(dev, DL_ERROR, "%s: Exit BL\n", __func__);
-		goto pt_firmware_cont_release_exit;
+		pip2_bl_status = PIP2_BL_STATUS_NO_FW_PROVIDED;
+		goto exit_release_fw;
 	}
-
 	if (!fw->data || !fw->size) {
 		pt_debug(dev, DL_ERROR,
-			"%s: Invalid builtin firmware\n", __func__);
-		goto pt_firmware_cont_release_exit;
+			"%s: Invalid firmware\n", __func__);
+		pip2_bl_status = PIP2_BL_STATUS_INVALID_FW_IMAGE;
+		goto exit_release_fw;
+	}
+	if (fw->data[0] >= (fw->size + 1)) {
+		pt_debug(dev, DL_ERROR,
+			"%s: Firmware format is invalid\n", __func__);
+		pip2_bl_status = PIP2_BL_STATUS_INVALID_FW_IMAGE;
+		goto exit_release_fw;
 	}
 
 	pip2_bl_status += 1;
 	pt_debug(dev, DL_WARN,
-		"%s: Found firmware of size:%d bytes\n",
-		__func__, (int)fw->size);
-
+		"%s: Found FW of size:%d bytes\n", __func__, (int)fw->size);
 	pm_runtime_get_sync(dev);
+	pip2_bl_status += 1;
 
 	ret = cmd->request_exclusive(dev, PT_LDR_REQUEST_EXCLUSIVE_TIMEOUT);
-	if (ret < 0)
-		goto pt_firmware_cont_release_exit;
+	if (ret < 0) {
+		pip2_bl_status = PIP2_BL_STATUS_EXCLUSIVE_ACCESS_ERROR;
+		goto exit_release_fw;
+	}
+	pip2_bl_status += 1;
 
 	/* Wait for completion of FW upgrade thread before continuing */
 	if (!ld->pip2_load_builtin)
 		init_completion(&pip2_data->pip2_fw_upgrade_complete);
 
-	/* Force DUT to enter the BL */
 	pip2_bl_status += 1;
+	/*
+	 * mode is used below, if DUT was already in BL before attmepting to
+	 * enter the BL, there was either no FW to run or the FW was corrupt
+	 * so either way force a BL
+	 */
 	ret = cmd->request_pip2_enter_bl(dev, &mode);
 	if (ret) {
 		pt_debug(dev, DL_ERROR, "%s: Failed to enter BL\n", __func__);
 		pip2_bl_status = PIP2_BL_STATUS_ENTER_BL_ERROR;
-		goto exit;
+		goto exit_release_fw;
 	}
 	pip2_bl_status += 1;
 
-	/* Only compare FW versions when doing a built-in BL */
+	/* Only compare FW ver or previous mode when doing a built-in upgrade */
 	if (ld->pip2_load_builtin) {
-		img_app_major_ver = fw->data[3];
-		img_app_minor_ver = fw->data[4];
-		img_app_rev_ctrl  = fw->data[9]<<24 | fw->data[10]<<16 |
-				    fw->data[11]<<8 | fw->data[12];
-		pt_debug(dev, DL_WARN,
-			"%s BL Image Version:   %02x.%02x.%d\n",
-			__func__, img_app_major_ver, img_app_minor_ver,
-			img_app_rev_ctrl);
-
-		ret = cmd->request_pip2_bin_hdr(dev, &hdr);
-		if (ret != 0) {
-			pt_debug(dev, DL_WARN,
-				"App ver info not available, will upgrade FW");
-			upgrade = 1;
-			goto prepare_upgrade;
+		if (_pt_pip2_need_upgrade_due_to_fw_ver(dev, fw) ||
+		    mode == PT_MODE_BOOTLOADER) {
+			pip2_bl_status += 1;
+		} else {
+			pip2_bl_status = PIP2_BL_STATUS_FW_VERSION_ERROR;
+			goto exit_release_fw;
 		}
-		pt_debug(dev, DL_WARN,
-			"%s Current FW Version: %02X.%02X.%d\n",
-			__func__, hdr.fw_major, hdr.fw_minor, hdr.fw_rev_ctrl);
-		pt_debug(dev, DL_WARN,
-			"%s BL Image Version:   %02x.%02x.%d\n",
-			__func__, img_app_major_ver, img_app_minor_ver,
-			img_app_rev_ctrl);
+	}
 
-		if ((256 * img_app_major_ver + img_app_minor_ver) <
-		    (256 * hdr.fw_major + hdr.fw_minor)) {
-			pt_debug(dev, DL_WARN,
-				"bin file version <=, will not upgrade FW");
-			pip2_bl_status = PIP2_BL_STATUS_FW_VERSION_ERROR;
-			goto exit;
-		} else if (img_app_rev_ctrl <= hdr.fw_rev_ctrl) {
-			pt_debug(dev, DL_WARN,
-				"bin file rev ctrl <=, will not upgrade FW");
-			pip2_bl_status = PIP2_BL_STATUS_FW_VERSION_ERROR;
-			goto exit;
-		} else
-			upgrade = 1;
-	} else
-		/* Always do a manual upgrade */
-		upgrade = 1;
-
-prepare_upgrade:
 	/* Open correct file */
 	if (ld->pip2_load_fw_to_ram) {
-		data[0] = 0;	/* File 0 - SRAM loader file */
+		file = PIP2_RAM_FILE;
 		pt_debug(dev, DL_INFO,
 			"%s Send OPEN File for RAM write\n", __func__);
 	} else {
-		data[0] = 1;	/* File 1 - FLASH Boot image file */
+		file = PIP2_FW_FILE;
 		pt_debug(dev, DL_INFO,
 			"%s Send OPEN File for FLASH write\n", __func__);
 	}
-
-	ret = cmd->nonhid_cmd->pip2_send_cmd(dev,
-		PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
-		PIP2_CMD_ID_FILE_OPEN, data, 1, read_buf, &actual_read_len);
-	status      = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
-	file_handle = read_buf[PIP2_RESPONSE_BODY_OFFSET];
-	if (ret || ((status != 0x00) && (status != 0x03)) || file_handle > 1) {
-		pt_debug(dev, DL_ERROR,
-			"%s File open failure with file = %d\n",
-			__func__, file_handle);
-		ret = -1;
+	ret = cmd->nonhid_cmd->pip2_file_open(dev, file);
+	if (ret < 0) {
+		pt_debug(dev, DL_ERROR, "%s File open failure with file = %d\n",
+			__func__, file);
 		pip2_bl_status = PIP2_BL_STATUS_FILE_OPEN_ERROR;
-		goto exit;
+		goto exit_release_fw;
 	}
-	pip2_data->pip2_file_handle = file_handle;
-	pt_debug(dev, DL_INFO,
-		"%s File handle = 0x%02x\n", __func__,
-		pip2_data->pip2_file_handle);
+	pip2_data->pip2_file_handle = ret;
+	pip2_bl_status += 1;
 
-	/* FLASH program only */
 	if (!ld->pip2_load_fw_to_ram) {
-		/* Log the Flash part info if debugging enabled */
+#ifdef TTDL_DIAGNOSTICS
+		/* Log the Flash part info */
 		if (cd->debug_level >= DL_DEBUG)
 			_pt_pip2_get_flash_info(dev, &pip2_cmd, read_buf);
+#endif
 
-		/* File ioctl, erase file before loading */
-		pt_debug(dev, DL_WARN,
-			"%s Send ERASE file command...\n", __func__);
-		data[0] = file_handle;
-		data[1] = PIP2_FILE_IOCTL_CODE_ERASE_FILE;
+		/* Erase file before loading */
+		ret = cmd->nonhid_cmd->pip2_file_erase(dev, PIP2_FW_FILE);
+		if (ret < 0) {
+			pt_debug(dev, DL_ERROR,
+				"%s: File erase failed rc=%d\n", __func__, ret);
+			pip2_bl_status = PIP2_BL_STATUS_ERASE_ERROR;
+			goto error_exit_close_file;
+		}
+		pip2_bl_status += 5;
+	}
+
+	fw_img = (u8 *)&(fw->data[0]);
+	fw_size = fw->size;
+	remain_bytes = fw_size;
+	buf[0] = pip2_data->pip2_file_handle;
+	pt_debug(dev, DL_WARN,
+		"%s: Writing %d bytes of firmware data now\n",
+		__func__, fw_size);
+
+	/* Continue writing while data remains */
+	while (remain_bytes > PIP2_FILE_WRITE_LEN_PER_PACKET) {
+		write_len = PIP2_FILE_WRITE_LEN_PER_PACKET;
+
+		/* Don't update BL status on every pass */
+		if (remain_bytes % 1000 < PIP2_FILE_WRITE_LEN_PER_PACKET) {
+			/* Calculate % complete for bl_status sysfs */
+			percent_cmplt = (fw_size - remain_bytes) *
+					100 / fw_size;
+			pip2_bl_status = (percent_cmplt >
+				pip2_bl_status) ? percent_cmplt :
+				pip2_bl_status;
+
+#ifdef TTDL_DIAGNOSTICS
+			pt_debug(dev, DL_WARN,
+				"Wrote %d of %d bytes to File 0x%02x\n",
+				fw_size - remain_bytes - write_len,
+				fw_size, pip2_data->pip2_file_handle);
+#endif
+		}
+		if (retry_packet > 0) {
+#ifdef TTDL_DIAGNOSTICS
+			cd->bl_retry_packet_count++;
+			pt_debug(dev, DL_WARN,
+				"%s: === Retry Packet #%d ===\n",
+				__func__, retry_packet);
+#endif
+			/* Get and log the last error(s) */
+			_pt_pip2_log_last_error(dev, &pip2_cmd,
+				read_buf);
+		}
+
+		memcpy(&buf[1], fw_img, write_len);
 		ret = cmd->nonhid_cmd->pip2_send_cmd(dev,
 			PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
-			PIP2_CMD_ID_FILE_IOCTL, data, 2, read_buf,
-			&actual_read_len);
+			PIP2_CMD_ID_FILE_WRITE, buf, write_len + 1,
+			read_buf, &actual_read_len);
+		status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
+
+		/* Write cmd successful with a fail status */
+		if (!ret && status) {
+			/*
+			 * The last time through the loop when remain_bytes =
+			 * write_len, no partial payload will remain, the last
+			 * successful write (when writing to RAM) will respond
+			 * with EOF status, writing to FLASH will respond with a
+			 * standard success status of 0x00
+			 */
+			if (ld->pip2_load_fw_to_ram &&
+			    status == PIP2_RSP_ERR_END_OF_FILE &&
+			    remain_bytes == write_len) {
+				pt_debug(dev, DL_WARN,
+					"%s Last write, ret = 0x%02x\n",
+					__func__, status);
+				/* Drop out of the while loop */
+				break;
+			}
+			pip2_bl_status = PIP2_BL_STATUS_WRITE_ERROR;
+			pt_debug(dev, DL_ERROR,
+				"%s file write failure, status = 0x%02x\n",
+				__func__, status);
+			if (retry_packet >= 3) {
+				/* Tripple retry error - break */
+				remain_bytes = 0;
+				pt_debug(dev, DL_ERROR,
+					"%s %d - Packet status error - Break\n",
+					__func__, status);
+			} else {
+				retry_packet++;
+			}
+		} else if (ret) {
+			/* Packet write failed - retry 3x */
+			if (retry_packet >= 3) {
+				remain_bytes = 0;
+				pt_debug(dev, DL_ERROR,
+					"%s %d - Packet cmd error - Break\n",
+					__func__, ret);
+			}
+			retry_packet++;
+		} else {
+			/* Cmd succes and status success */
+			retry_packet = 0;
+		}
+
+		if (retry_packet == 0) {
+			fw_img += write_len;
+			remain_bytes -= write_len;
+		}
+	}
+	/* Write the remaining bytes if any remain */
+	if (remain_bytes > 0 && retry_packet == 0) {
+		pt_debug(dev, DL_WARN,
+			"%s: Write last %d bytes to File = 0x%02x\n",
+			__func__, remain_bytes, pip2_data->pip2_file_handle);
+		memcpy(&buf[1], fw_img, remain_bytes);
+		ret = cmd->nonhid_cmd->pip2_send_cmd(dev,
+			PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
+			PIP2_CMD_ID_FILE_WRITE, buf, remain_bytes + 1,
+			read_buf, &actual_read_len);
 		status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
 		if (ret || status) {
-			pt_debug(dev, DL_ERROR,
-				"%s: File erase failure rc=%d status=%d\n",
-				__func__, ret, status);
-			ret = -1;
-			pip2_bl_status = PIP2_BL_STATUS_ERASE_ERROR;
-			goto exit;
-		}
-	pt_debug(dev, DL_INFO,
-			"%s File erase successful\n", __func__);
-	}
-
-	if (upgrade) {
-		u8 header_size = 0;
-
-		if (!fw)
-			goto pt_firmware_cont_release_exit;
-		if (!fw->data || !fw->size) {
-			pt_debug(dev, DL_ERROR,
-				"%s: No firmware received\n", __func__);
-		}
-		header_size = fw->data[0];
-		if (header_size >= (fw->size + 1)) {
-			pt_debug(dev, DL_ERROR,
-				"%s: Firmware format is invalid\n", __func__);
-		}
-		fw_img = (u8 *)&(fw->data[0]);
-		fw_size = fw->size;
-		remain_bytes = fw_size;
-		buf[0] = file_handle;
-		pt_debug(dev, DL_WARN,
-			"%s: Writing %d bytes of firmware data now\n",
-			__func__, fw_size);
-
-		/* Continue writing while data remains */
-		while (remain_bytes > len_per_packet) {
-			write_len = len_per_packet;
-
-			/* Don't print debug msg on every pass */
-			if (remain_bytes % 1000 < len_per_packet) {
-				/* Calculate % complete for bl_status sysfs */
-				percent_cmplt = (fw_size - remain_bytes) *
-						100 / fw_size;
-				pip2_bl_status = (percent_cmplt >
-					pip2_bl_status) ? percent_cmplt :
-					pip2_bl_status;
-
-				pt_debug(dev, DL_WARN,
-					"Wrote %d of %d bytes to File 0x%02x\n",
-					fw_size - remain_bytes - write_len,
-					fw_size, file_handle);
-			}
-			if (retry_packet > 0) {
-#ifdef TTDL_DIAGNOSTICS
-				cd->bl_retry_packet_count++;
-				pt_debug(dev, DL_WARN,
-					"%s: === Retry Packet #%d ===\n",
-					__func__, retry_packet);
-#endif
-				/* Get and log the last error(s) */
-				_pt_pip2_log_last_error(dev, &pip2_cmd,
-					read_buf);
-			}
-
-			/* Send the file write cmd as a PIP2 command */
-			pip2_data->pip2_file_handle = file_handle;
-			memcpy(&buf[1], fw_img, write_len);
-			ret = cmd->nonhid_cmd->pip2_send_cmd(dev,
-				PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
-				PIP2_CMD_ID_FILE_WRITE, buf, write_len + 1,
-				read_buf, &actual_read_len);
-			status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
-
-			/* Write cmd successful with a fail status */
-			if (!ret && status) {
-				/*
-				 * The last time through the loop when
-				 * remain_bytes = write_len, no partial
-				 * payload will remain, the last successful
-				 * write (when writing to RAM) will respond with
-				 * EOF status, writing to FLASH will respond
-				 * with a standard success status of 0x00
-				 */
-				if (ld->pip2_load_fw_to_ram &&
-				    status == PIP2_RSP_ERR_END_OF_FILE &&
-				    remain_bytes == write_len) {
-					pt_debug(dev, DL_WARN,
-						"%s Last write, ret = 0x%02x\n",
-						__func__, status);
-					/* Drop out of the while loop */
-					break;
-				}
-				pip2_bl_status = PIP2_BL_STATUS_WRITE_ERROR;
+			/*
+			 * Any non zero status when writing to FLASH is an
+			 * error. Only when writing to RAM, the last packet
+			 * must respond with an EOF status
+			 */
+			if (!ld->pip2_load_fw_to_ram ||
+			     (ld->pip2_load_fw_to_ram &&
+			     status != PIP2_RSP_ERR_END_OF_FILE)) {
+				pip2_bl_status =
+					PIP2_BL_STATUS_WRITE_ERROR;
 				pt_debug(dev, DL_ERROR,
-					"%s file write failure, status = 0x%02x\n",
+					"%s write failure, status = 0x%02x\n",
 					__func__, status);
-				if (retry_packet >= 3) {
-					/* Tripple retry error - break */
-					remain_bytes = 0;
-					pt_debug(dev, DL_ERROR,
-						"%s %d - Packet retry status error - Break\n",
-						__func__, status);
-				} else {
-					retry_packet++;
-				}
-			} else if (ret) {
-				/* Packet write failed - retry 3x */
-				if (retry_packet >= 3) {
-					remain_bytes = 0;
-					pt_debug(dev, DL_ERROR,
-						"%s %d - Packet Retry cmd error - Break\n",
-						__func__, ret);
-				}
-				retry_packet++;
-			} else
-				/* Cmd succes and status success */
-				retry_packet = 0;
-
-			if (retry_packet == 0) {
-				fw_img += write_len;
-				remain_bytes -= write_len;
 			}
 		}
-		/* Write the remaining bytes if any remain */
-		if (remain_bytes > 0 && retry_packet == 0) {
-			pt_debug(dev, DL_WARN,
-				"%s: Write last %d bytes to File = 0x%02x\n",
-				__func__, remain_bytes, file_handle);
-			memcpy(&buf[1], fw_img, remain_bytes);
-			ret = cmd->nonhid_cmd->pip2_send_cmd(dev,
-				PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
-				PIP2_CMD_ID_FILE_WRITE, buf, remain_bytes + 1,
-				read_buf, &actual_read_len);
-			status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
-			if (!ret || status) {
-				/*
-				 * Any non zero status when writing to FLASH is
-				 * an error. Only when writing to RAM, the last
-				 * packet must respond with an EOF status
-				 */
-				if (!ld->pip2_load_fw_to_ram ||
-				     (ld->pip2_load_fw_to_ram &&
-				     status != PIP2_RSP_ERR_END_OF_FILE)) {
-					pip2_bl_status =
-						PIP2_BL_STATUS_WRITE_ERROR;
-					pt_debug(dev, DL_ERROR,
-						"%s write failure, status = 0x%02x\n",
-						__func__, status);
-				}
-			}
-		}
-	}
-
-	/* Close the file */
-	pt_debug(dev, DL_WARN, "%s closing file_handle = 0x%02x",
-		__func__, file_handle);
-	data[0] = file_handle;
-	ret = cmd->nonhid_cmd->pip2_send_cmd(dev,
-		PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
-		PIP2_CMD_ID_FILE_CLOSE, data, 1, read_buf, &actual_read_len);
-	status = read_buf[PIP2_RESPONSE_STATUS_OFFSET];
-	if (ret || status) {
-		pt_debug(dev, DL_ERROR,
-			"%s file close failure\n", __func__);
-		pip2_bl_status = PIP2_BL_STATUS_FILE_CLOSE_ERROR;
-		goto exit;
 	}
 
 	if (retry_packet >= 3) {
 		/* A packet write failure occured 3x */
 		pt_debug(dev, DL_ERROR,
-			"%s: BIN file write terminated due to consecutive write errors\n",
+			"%s: BL terminated due to consecutive write errors\n",
 			__func__);
 		pip2_bl_status = PIP2_BL_STATUS_WRITE_ERROR;
-		goto exit;
+		goto error_exit_close_file;
 	} else
 		pt_debug(dev, DL_INFO,
 			"%s: BIN file write finished successfully\n", __func__);
+
+	ret = cmd->nonhid_cmd->pip2_file_close(dev, file);
+	if (ret < 0) {
+		pt_debug(dev, DL_ERROR,
+			"%s file close failure\n", __func__);
+		pip2_bl_status = PIP2_BL_STATUS_FILE_CLOSE_ERROR;
+		goto exit_release_fw;
+	}
 
 	pip2_bl_status = PIP2_BL_STATUS_ACTIVE_99;
 	if (ld->pip2_load_fw_to_ram) {
@@ -2503,7 +2489,7 @@ prepare_upgrade:
 			pt_debug(dev, DL_ERROR,
 				"%s Execute command failure\n", __func__);
 			pip2_bl_status = PIP2_BL_STATUS_EXECUTE_ERROR;
-			goto exit;
+			goto exit_release_fw;
 		}
 	} else {
 		/* Do a reset if writing to FLASH */
@@ -2512,43 +2498,37 @@ prepare_upgrade:
 		cmd->request_reset(dev, PT_CORE_CMD_UNPROTECTED);
 	}
 
-	/* Wait to see the FW reset sentinel for up to 500ms */
-	while (attempt++ < 25) {
-		msleep(20);
+	/* Wait for FW reset sentinel from reset or execute for up to 500ms */
+	t = wait_event_timeout(cd->wait_q,
+		(cd->startup_status >= STARTUP_STATUS_FW_RESET_SENTINEL),
+		msecs_to_jiffies(PT_BL_WAIT_FOR_SENTINEL));
+	if (IS_TMO(t)) {
 		pt_debug(dev, DL_WARN,
-			"%s: 0x%04X Waiting for FW sentinel for %dms",
-			__func__, cd->startup_status, attempt*20);
-		if (cd->startup_status & STARTUP_STATUS_FW_RESET_SENTINEL)
-			break;
+			"%s: 0x%04X Timeout waiting for FW sentinel",
+			__func__, cd->startup_status);
 	}
 
 	/* Double verify DUT is alive and well in Application mode */
 	if (cd->startup_status & STARTUP_STATUS_FW_RESET_SENTINEL) {
 		ret = cmd->request_pip2_get_mode(dev, PT_CORE_CMD_UNPROTECTED,
 			&mode);
-		pt_debug(dev, DL_WARN,
-			"%s: Expecting App mode (2), Got Mode = %d",
+		pt_debug(dev, DL_WARN, "%s: mode = %d (Expected APP [0x02] )",
 			__func__, mode);
 		if (mode != PT_MODE_OPERATIONAL) {
 			pt_debug(dev, DL_ERROR,
 				"%s ERROR: Not in App mode as expected\n",
 				__func__);
 			pip2_bl_status = PIP2_BL_STATUS_MODE_ERROR;
-			goto exit;
+			goto exit_release_fw;
 		}
 	} else {
-		pt_debug(dev, DL_ERROR,
-			"%s FW sentinel not seen\n", __func__);
-		/* Get and log the last error(s) */
+		pt_debug(dev, DL_ERROR, "%s FW sentinel not seen\n", __func__);
 		_pt_pip2_log_last_error(dev, &pip2_cmd, read_buf);
 		pip2_bl_status = PIP2_BL_STATUS_FW_SENTINEL_NOT_SEEN;
-		goto exit;
+		goto exit_release_fw;
 	}
 
-	pt_debug(dev, DL_INFO,
-		"%s === PIP2 FW upgrade finished ===\n", __func__);
-
-	/* Either RESET or LAUNCH APP has occurred so definately not in BL */
+	pt_debug(dev, DL_INFO, "%s == PIP2 FW upgrade finished ==\n", __func__);
 	pip2_bl_status = PIP2_BL_STATUS_COMPLETE;
 
 	/* Subscribe calibration task if calibration flag is set */
@@ -2568,22 +2548,26 @@ prepare_upgrade:
 			pt_debug(dev, DL_ERROR,
 				"%s: Failed adding callback for calibration\n",
 				__func__);
-			pt_debug(dev, DL_ERROR,
-				"%s: No calibration will be performed\n",
-				__func__);
 			ret = 0;
 		} else
 			wait_for_calibration_complete = true;
 	}
+	goto exit_release_fw;
 
-exit:
+error_exit_close_file:
+	ret = cmd->nonhid_cmd->pip2_file_close(dev, file);
+	if (ret < 0) {
+		pt_debug(dev, DL_ERROR,
+			"%s file close failure\n", __func__);
+		pip2_bl_status = PIP2_BL_STATUS_FILE_CLOSE_ERROR;
+	}
+
+exit_release_fw:
 	/* Ensure the boot mode pin is released */
-	pt_debug(dev, DL_WARN,
-		"%s Disabling host mode pin\n", __func__);
+	pt_debug(dev, DL_WARN, "%s Disabling host mode pin\n", __func__);
 	cmd->request_set_runfw_pin(dev, 1);
 	cmd->release_exclusive(dev);
 
-pt_firmware_cont_release_exit:
 	pm_runtime_put_sync(dev);
 	if (fw)
 		release_firmware(fw);
@@ -2594,8 +2578,7 @@ pt_firmware_cont_release_exit:
 			ld->builtin_bin_fw_status = -EINVAL;
 	}
 
-	/* Issue a restart if a load took place to get HID descriptor etc. */
-	if (!ld->builtin_bin_fw_status) {
+	if (pip2_bl_status == PIP2_BL_STATUS_COMPLETE) {
 		pt_debug(dev, DL_WARN, "%s Requesting RESTART\n", __func__);
 		cmd->request_restart(dev, true);
 	}
@@ -2603,13 +2586,6 @@ pt_firmware_cont_release_exit:
 	if (wait_for_calibration_complete)
 		wait_for_completion(&ld->calibration_complete);
 
-	/*
-	 * Start watchdog, temporarily override the WD interval to 500ms to
-	 * force the WD to fire sooner and therefor re-enumerating the DUT
-	 * with TTDL quicker. The WD work function ensure the WD interval
-	 * is returned back to it's original value.
-	 */
-	cd->watchdog_interval = 500;
 	pt_debug(dev, DL_WARN, "%s Starting watchdog\n", __func__);
 	ret = cmd->request_start_wd(dev);
 }
@@ -2751,7 +2727,8 @@ static DEVICE_ATTR(pip2_manual_upgrade, S_IWUSR,
 static ssize_t pt_update_fw_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
-	u8 dut_gen = cmd->request_dut_generation(dev);
+	u32 status = STARTUP_STATUS_START;
+	u8 dut_gen = cmd->request_dut_generation(dev, &status);
 
 	if (dut_gen == DUT_PIP2_CAPABLE)
 		size = pt_pip2_manual_upgrade_store(dev, attr, buf, size);
@@ -2940,6 +2917,7 @@ static ssize_t pt_pip2_bl_status_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	ssize_t ret;
+	u8 status = pip2_bl_status;
 
 	if (pip2_bl_status <= PIP2_BL_STATUS_COMPLETE) {
 		pt_debug(dev, DL_DEBUG,
@@ -2947,71 +2925,76 @@ static ssize_t pt_pip2_bl_status_show(struct device *dev,
 		return sprintf(buf, "%d\n", pip2_bl_status);
 	}
 
-	switch (pip2_bl_status) {
+	switch (status) {
 	case PIP2_BL_STATUS_GENERAL_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - General programming error\n",
-			pip2_bl_status);
+			"ERROR: %d - General programming failure\n", status);
 		break;
 	case PIP2_BL_STATUS_PIP_VERSION_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - Wrong PIP version detected\n",
-			pip2_bl_status);
+			"ERROR: %d - Wrong PIP version detected\n", status);
 		break;
 	case PIP2_BL_STATUS_FW_VERSION_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - FW vervion newer than bin file\n",
-			pip2_bl_status);
+			"ERROR: %d - FW vervion newer than bin file\n", status);
 		break;
 	case PIP2_BL_STATUS_ERASE_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - Erase FW file error\n",
-			pip2_bl_status);
+			"ERROR: %d - ROM BL failed to erase FW file in FLASH\n",
+			status);
 		break;
 	case PIP2_BL_STATUS_FILE_CLOSE_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - Close FW file error\n",
-			pip2_bl_status);
+			"ERROR: %d - ROM BL failed to close FW file in FLASH\n",
+			status);
 		break;
 	case PIP2_BL_STATUS_WRITE_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - File write error\n",
-			pip2_bl_status);
+			"ERROR: %d - ROM BL file write failure\n", status);
 		break;
 	case PIP2_BL_STATUS_EXECUTE_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - Execute RAM image failure\n",
-			pip2_bl_status);
+			"ERROR: %d - ROM BL failed to execute RAM image\n",
+			status);
 		break;
 	case PIP2_BL_STATUS_RESET_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - Reset DUT error\n",
-			pip2_bl_status);
+			"ERROR: %d - Reset DUT failure\n",
+			status);
 		break;
 	case PIP2_BL_STATUS_MODE_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - Program complete, Incorrect BL/App mode detected after sentinel\n",
-			pip2_bl_status);
+			"ERROR: %d - Program complete, Incorrect BL/APP mode detected after reset sentinel\n",
+			status);
 		break;
 	case PIP2_BL_STATUS_ENTER_BL_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - Could not enter the BL\n",
-			pip2_bl_status);
+			"ERROR: %d - Could not enter the BL\n", status);
 		break;
 	case PIP2_BL_STATUS_FILE_OPEN_ERROR:
 		ret = sprintf(buf,
-			"ERROR: %d - Error opening the file in FLASH\n",
-			pip2_bl_status);
+			"ERROR: %d - ROM BL failed to open FW file in FLASH\n",
+			status);
 		break;
 	case PIP2_BL_STATUS_FW_SENTINEL_NOT_SEEN:
 		ret = sprintf(buf,
 			"ERROR: %d - FW Reset Sentinel not seen after XRES\n",
-			pip2_bl_status);
+			status);
+		break;
+	case PIP2_BL_STATUS_EXCLUSIVE_ACCESS_ERROR:
+		ret = sprintf(buf,
+			"ERROR: %d - TTDL loader failed to get exclusive accss to DUT\n",
+			status);
+		break;
+	case PIP2_BL_STATUS_NO_FW_PROVIDED:
+		ret = sprintf(buf,
+			"ERROR: %d - No FW provided to load\n", status);
+		break;
+	case PIP2_BL_STATUS_INVALID_FW_IMAGE:
+		ret = sprintf(buf, "ERROR: %d - Invalid FW image\n", status);
 		break;
 	default:
-		ret = sprintf(buf,
-			"ERROR: %d - Unknown error\n",
-			pip2_bl_status);
+		ret = sprintf(buf, "ERROR: %d - Unknown error\n", status);
 	}
 	return ret;
 }
@@ -3075,9 +3058,9 @@ static ssize_t pt_pip2_get_last_error_show(struct device *dev,
 	}
 
 exit_error_show:
-	pm_runtime_put_sync(dev);
 	cmd->release_exclusive(dev);
 error:
+	pm_runtime_put_sync(dev);
 	return snprintf(buf, PT_MAX_PRBUF_SIZE,
 		"PIP2_LAST_ERRORNO: %d\n",
 		read_buf[PIP2_RESPONSE_BODY_OFFSET + 1]);
@@ -3120,27 +3103,27 @@ static int pt_loader_attention(struct device *dev)
  ******************************************************************************/
 static int pt_fw_upgrade_cb(struct device *dev)
 {
-	u8 dut_gen = cmd->request_dut_generation(dev);
+	u32 status = STARTUP_STATUS_START;
+	u8 dut_gen = cmd->request_dut_generation(dev, &status);
 
 #ifdef CONFIG_TOUCHSCREEN_PARADE_PLATFORM_FW_UPGRADE
 	if (dut_gen == DUT_PIP1_ONLY) {
 		pt_debug(dev, DL_WARN, "%s: Upgrade Platform FW", __func__);
 		if (!upgrade_firmware_from_platform(dev, false))
-			return 1;
+			return 0;
 	}
 #endif
 
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
 	pt_debug(dev, DL_WARN, "%s: Upgrade Builtin FW", __func__);
 	if (dut_gen == DUT_PIP2_CAPABLE) {
-		if (!pt_pip2_upgrade_firmware_from_builtin(dev)) {
-			pt_debug(dev, DL_WARN, "%s: Builtin FW upgrade failed",
-				__func__);
-			return 1;
-		}
+		if (!pt_pip2_upgrade_firmware_from_builtin(dev))
+			return 0;
+		pt_debug(dev, DL_WARN, "%s: Builtin FW upgrade failed",
+			__func__);
 	} else {
 		if (!upgrade_firmware_from_builtin(dev))
-			return 1;
+			return 0;
 	}
 #endif
 	return 0;
@@ -3162,12 +3145,15 @@ static int pt_loader_probe(struct device *dev, void **data)
 	struct pip2_loader_data *pip2_data;
 	struct pt_platform_data *pdata = dev_get_platdata(dev);
 	int rc;
-	u8 dut_gen = cmd->request_dut_generation(dev);
+	u32 status = STARTUP_STATUS_START;
+	u8 dut_gen = cmd->request_dut_generation(dev, &status);
 
-	pt_debug(dev, DL_WARN,
+#ifdef TTDL_DIAGNOSTICS
+	pt_debug(dev, DL_INFO,
 		"%s: entering pt_loader_probe\n", __func__);
-#ifdef PT_FW_UPGRADE
-	pt_debug(dev, DL_WARN,
+#endif /* TTDL_DIAGNOSTICS */
+#if PT_FW_UPGRADE
+	pt_debug(dev, DL_INFO,
 		"%s: PT_FW_UPGRADE is set\n", __func__);
 #endif
 
@@ -3200,7 +3186,7 @@ static int pt_loader_probe(struct device *dev, void **data)
 		rc = device_create_file(dev, &dev_attr_update_fw);
 		if (rc) {
 			pt_debug(dev, DL_ERROR,
-				"%s: Error creating update_fw sysfs\n",
+				"%s: Error creating update_fw\n",
 				__func__);
 			goto error_create_update_fw;
 		}
@@ -3208,7 +3194,7 @@ static int pt_loader_probe(struct device *dev, void **data)
 		rc = device_create_file(dev, &dev_attr_pip2_manual_upgrade);
 		if (rc) {
 			pt_debug(dev, DL_ERROR,
-				"%s: Error creating pip2_manual_upgrade sysfs\n",
+				"%s: Error creating pip2_manual_upgrade\n",
 				__func__);
 			goto error_create_pip2_manual_upgrade;
 		}
@@ -3216,7 +3202,7 @@ static int pt_loader_probe(struct device *dev, void **data)
 		rc = device_create_file(dev, &dev_attr_pip2_manual_ram_upgrade);
 		if (rc) {
 			pt_debug(dev, DL_ERROR,
-				"%s: Error creating pip2_manual_ram_upgrade sysfs\n",
+				"%s: Error creating pip2_manual_ram_upgrade\n",
 				__func__);
 			goto error_create_pip2_manual_ram_upgrade;
 		}
@@ -3225,7 +3211,7 @@ static int pt_loader_probe(struct device *dev, void **data)
 		rc = device_create_file(dev, &dev_attr_pip2_flash_erase);
 		if (rc) {
 			pt_debug(dev, DL_ERROR,
-				"%s: Error creating pip2_flash_erase sysfs\n",
+				"%s: Error creating pip2_flash_erase\n",
 				__func__);
 			goto error_create_pip2_flash_erase;
 		}
@@ -3233,7 +3219,7 @@ static int pt_loader_probe(struct device *dev, void **data)
 		rc = device_create_file(dev, &dev_attr_pip2_bl_status);
 		if (rc) {
 			pt_debug(dev, DL_ERROR,
-				"%s: Error creating pip2_bl_status sysfs\n",
+				"%s: Error creating pip2_bl_status\n",
 				__func__);
 			goto error_create_pip2_bl_status;
 		}
@@ -3260,7 +3246,7 @@ static int pt_loader_probe(struct device *dev, void **data)
 		rc = device_create_file(dev, &dev_attr_update_fw);
 		if (rc) {
 			pt_debug(dev, DL_ERROR,
-				"%s: Error creating update_fw sysfs\n",
+				"%s: Error creating update_fw\n",
 				__func__);
 			goto error_create_update_fw_legacy;
 		}
@@ -3307,7 +3293,7 @@ static int pt_loader_probe(struct device *dev, void **data)
 		pt_fw_upgrade_cb, PT_MODE_UNKNOWN);
 #endif
 #if PT_FW_UPGRADE || PT_TTCONFIG_UPGRADE
-	pt_debug(dev, DL_WARN, "%s: INIT_WORK pt_calibrate_idacs\n",
+	pt_debug(dev, DL_INFO, "%s: INIT_WORK pt_calibrate_idacs\n",
 		__func__);
 	init_completion(&ld->calibration_complete);
 	INIT_WORK(&ld->calibration_work, pt_calibrate_idacs);
@@ -3382,7 +3368,8 @@ error_no_pdata:
 static void pt_loader_release(struct device *dev, void *data)
 {
 	struct pt_loader_data *ld = (struct pt_loader_data *)data;
-	u8 dut_gen = cmd->request_dut_generation(dev);
+	u32 status = STARTUP_STATUS_START;
+	u8 dut_gen = cmd->request_dut_generation(dev, &status);
 
 #if PT_FW_UPGRADE
 	cmd->unsubscribe_attention(dev, PT_ATTEN_IRQ, PT_LOADER_NAME,

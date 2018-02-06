@@ -1,16 +1,18 @@
 /*
  * pt_platform.h
- * Parade TrueTouch(TM) Standard Product V5 Platform Module.
+ * Parade TrueTouch(TM) Standard Product Platform Module.
  * For use with Parade touchscreen controllers.
  * Supported parts include:
- * CYTMA5XX
- * CYTMA448
- * CYTMA445A
- * CYTT21XXX
- * CYTT31XXX
+ * TMA5XX
+ * TMA448
+ * TMA445A
+ * TT21XXX
+ * TT31XXX
+ * TT4XXXX
+ * TT7XXX
+ * TC3XXX
  *
- * Copyright (C) 2015 Parade Semiconductor
- * Copyright (C) 2013-2015 Cypress Semiconductor
+ * Copyright (C) 2015-2018 Parade Technologies
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -22,8 +24,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * Contact Parade Semiconductor at www.parade.com <ttdrivers@paradetech.com>
- *
+ * Contact Parade Technologies at www.parade.com <ttdrivers@paradetech.com>
  */
 
 #ifndef _LINUX_PT_PLATFORM_H
