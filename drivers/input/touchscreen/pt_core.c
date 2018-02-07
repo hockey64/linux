@@ -6360,7 +6360,8 @@ static int pt_parse_input(struct pt_core_data *cd)
 			cd->pip2_prot_active = false;
 			mutex_unlock(&cd->system_lock);
 			pt_debug(cd->dev, DL_WARN,
-				"%s: FW Sentinel - %s(%d) %s(%d)\n", __func__,
+				"%s: FW Sentinel - %s(0x%02X) %s(%d)\n",
+				__func__,
 				"hid_cmd_state", cd->hid_cmd_state,
 				"hid_reset_cmd_state", cd->hid_reset_cmd_state);
 
@@ -9840,6 +9841,7 @@ static ssize_t pt_command_store(struct device *dev,
 	mutex_lock(&cd->sysfs_lock);
 	cd->raw_cmd_status   = 0;
 	cd->response_buf_len = 0;
+	memset(cd->cmd_rsp_buf, 0, sizeof(cd->cmd_rsp_buf));
 	mutex_unlock(&cd->sysfs_lock);
 
 	length = pt_ic_parse_input_hex(dev, buf, size,
@@ -9854,17 +9856,17 @@ static ssize_t pt_command_store(struct device *dev,
 	pt_pr_buf(dev, DL_INFO, input_data, length, "command_buf");
 
 	pm_runtime_get_sync(dev);
-	rc = pt_hid_output_user_cmd(cd, PT_MAX_INPUT, cd->response_buf,
+	rc = pt_hid_output_user_cmd(cd, PT_MAX_INPUT, cd->cmd_rsp_buf,
 		length, input_data, &actual_read_len);
 	pm_runtime_put(dev);
 
 	mutex_lock(&cd->sysfs_lock);
 	if (rc) {
-		cd->response_buf_len = 0;
+		cd->cmd_rsp_buf_len = 0;
 		pt_debug(dev, DL_ERROR, "%s: Failed to send command\n",
 			__func__);
 	} else {
-		cd->response_buf_len = actual_read_len;
+		cd->cmd_rsp_buf_len = actual_read_len;
 		cd->raw_cmd_status = 1;
 	}
 	mutex_unlock(&cd->sysfs_lock);
@@ -9901,10 +9903,10 @@ static ssize_t pt_response_show(struct device *dev,
 	if (!cd->raw_cmd_status)
 		goto error;
 
-	num_read = cd->response_buf_len;
+	num_read = cd->cmd_rsp_buf_len;
 	for (i = 0; i < num_read; i++)
 		index += scnprintf(buf + index, PT_MAX_PRBUF_SIZE - index,
-			"0x%02X\n", cd->response_buf[i]);
+			"0x%02X\n", cd->cmd_rsp_buf[i]);
 
 	index += scnprintf(buf + index, PT_MAX_PRBUF_SIZE - index,
 		"(%zd bytes)\n", num_read);
@@ -10165,6 +10167,17 @@ static ssize_t pt_drv_debug_store(struct device *dev,
 		pt_debug(dev, DL_INFO, "%s: TTDL: Set show_timestamp: %d\n",
 			__func__, cd->show_timestamp);
 		mutex_unlock(&(cd->system_lock));
+		break;
+	case PT_DRV_DBG_GET_PUT_SYNC:
+		if (input_data[1] == 1) {
+			pm_runtime_get_sync(dev);
+			pt_debug(dev, DL_WARN,
+				"%s: TTDL: pm_runtime_get_sync\n", __func__);
+		} else if (input_data[1] == 0) {
+			pm_runtime_put(dev);
+			pt_debug(dev, DL_WARN,
+				"%s: TTDL: pm_runtime_put\n", __func__);
+		}
 		break;
 	case PT_DRV_DBG_WD_CORRECTIVE_ACTION:
 		mutex_lock(&cd->system_lock);
@@ -12192,19 +12205,20 @@ static int pt_probe_complete(struct pt_core_data *cd)
 	pt_debug(cd->dev, DL_DEBUG,
 		"%s: PARADE Entering Probe complete function\n", __func__);
 	pt_add_core(cd->dev);
+#endif /* --- End PT_PTSBC_SUPPORT --- */
 
 	/* Call platform init function before setting up the GPIO's */
 	if (cd->cpdata->init) {
 		pt_debug(cd->dev, DL_INFO, "%s: Init HW\n", __func__);
 		rc = cd->cpdata->init(cd->cpdata, PT_MT_POWER_ON, cd->dev);
 	} else {
-		pt_debug(cd->dev, DL_WARN,
-			"%s: No HW INIT function\n", __func__);
+		pt_debug(cd->dev, DL_WARN, "%s: No HW INIT function\n",
+			__func__);
 		rc = 0;
 	}
 	if (rc < 0) {
-		pt_debug(cd->dev, DL_ERROR,
-			"%s: HW Init fail r=%d\n", __func__, rc);
+		pt_debug(cd->dev, DL_ERROR, "%s: HW Init fail r=%d\n",
+			__func__, rc);
 	}
 
 	/* Power on the regulator(s) needed by the PtSBC */
@@ -12220,34 +12234,6 @@ static int pt_probe_complete(struct pt_core_data *cd)
 	if (rc < 0)
 		pt_debug(cd->dev, DL_ERROR, "%s: Setup power on fail r=%d\n",
 			__func__, rc);
-	/* TODO - determine how long we have to detect PIP2 BL after release */
-
-#else
-	if (cd->cpdata->init) {
-		pt_debug(cd->dev, DL_INFO, "%s: Init HW\n", __func__);
-		rc = cd->cpdata->init(cd->cpdata, PT_MT_POWER_ON, cd->dev);
-	} else {
-		pt_debug(cd->dev, DL_WARN, "%s: No HW INIT function\n",
-			__func__);
-		rc = 0;
-	}
-	if (rc < 0)
-		pt_debug(cd->dev, DL_ERROR, "%s: HW Init fail r=%d\n",
-			__func__, rc);
-
-	if (cd->cpdata->setup_power) {
-		pt_debug(cd->dev, DL_INFO, "%s: Device power on!\n", __func__);
-		rc = cd->cpdata->setup_power(cd->cpdata,
-			PT_MT_POWER_ON, cd->dev);
-	} else {
-		pt_debug(cd->dev, DL_WARN, "%s: No setup power function\n",
-			__func__);
-		rc = 0;
-	}
-	if (rc < 0)
-		pt_debug(cd->dev, DL_ERROR, "%s: Setup power on fail r=%d\n",
-			__func__, rc);
-#endif /* --- End PT_PTSBC_SUPPORT --- */
 
 #ifdef TTDL_DIAGNOSTICS
 	cd->watchdog_irq_stuck_count     = 0;
@@ -12310,7 +12296,7 @@ static int pt_probe_complete(struct pt_core_data *cd)
 	}
 
 	/* Without sleep DUT is not ready and will NAK the first write */
-	msleep(80);
+	msleep(150);
 
 	_pt_request_active_pip_protocol(cd->dev, PT_CORE_CMD_PROTECTED,
 		&pip_ver_major, &pip_ver_minor);
@@ -12320,7 +12306,6 @@ static int pt_probe_complete(struct pt_core_data *cd)
 		pt_debug(dev, DL_WARN,
 			" ==== PIP2.%02X Detected, Skip Enum ====\n",
 			pip_ver_minor);
-		pm_runtime_put_sync(dev);
 		goto create_sysfs_nodes;
 	} else if (pip_ver_major == 1) {
 		cd->bl_pip_version_major = pip_ver_major;
@@ -12330,9 +12315,8 @@ static int pt_probe_complete(struct pt_core_data *cd)
 	} else {
 		pt_debug(dev, DL_ERROR,
 			" ==== PIP Version Not Detected, Skip Enum  ====\n");
+		goto create_sysfs_nodes;
 	}
-
-	pm_runtime_put_sync(dev);
 
 	rc = pt_enum_with_dut(cd, false, &status);
 	if (rc == -ENODEV) {
@@ -12359,8 +12343,7 @@ create_sysfs_nodes:
 			goto error_after_startup;
 		}
 	}
-
-	pt_debug(dev, DL_INFO, "%s: Probe: MT, BTN\n", __func__);
+	pm_runtime_put_sync(dev);
 
 #ifndef PT_PTSBC_SUPPORT
 	/*
@@ -12368,6 +12351,7 @@ create_sysfs_nodes:
 	 * complete. Probing MT and BTN now is of no value because
 	 * the HID descriptor has not yet been read out.
 	 */
+	pt_debug(dev, DL_INFO, "%s: Probe: MT, BTN\n", __func__);
 	rc = pt_mt_probe(dev);
 	if (rc < 0) {
 		pt_debug(dev, DL_ERROR, "%s: Error, fail mt probe\n",

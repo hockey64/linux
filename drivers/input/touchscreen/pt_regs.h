@@ -306,6 +306,7 @@ enum PT_STARTUP_STATUS {
 #ifdef TTDL_DIAGNOSTICS
 #define	PT_DRV_DBG_FLUSH_I2C_BUS		204
 #define PT_DRV_DBG_SETUP_PWR                    205
+#define PT_DRV_DBG_GET_PUT_SYNC			206
 #define PT_DRV_DBG_WD_CORRECTIVE_ACTION		298
 #define PT_DRV_DBG_VIRTUAL_I2C_DUT		299
 #endif /* TTDL DIAGNOSTICS */
@@ -1219,7 +1220,9 @@ struct pt_core_data {
 	u8 cmd_buf[PT_PREALLOCATED_CMD_BUFFER];
 	u8 input_buf[PT_MAX_INPUT];
 	u8 response_buf[PT_MAX_INPUT];
+	u8 cmd_rsp_buf[PT_MAX_INPUT];
 	u16 response_buf_len;
+	u16 cmd_rsp_buf_len;
 	u8 raw_cmd_status;
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	struct early_suspend es;
