@@ -1069,7 +1069,7 @@ static int upgrade_firmware_from_class(struct device *dev)
 	pt_debug(dev, DL_INFO,
 		"%s: Enabling firmware class loader\n", __func__);
 
-	retval = request_firmware_nowait(THIS_MODULE, FW_ACTION_NOHOTPLUG,
+	retval = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
 			PT_FW_MANUAL_UPGRADE_FILE_NAME, dev, GFP_KERNEL, dev,
 			_pt_firmware_cont);
 	if (retval < 0) {
@@ -2663,7 +2663,7 @@ static int pt_pip2_do_fw_upgrade(struct pip2_loader_data *pip2_data,
 	 */
 	ld->pip2_load_builtin = false;
 	pt_debug(dev, DL_INFO, "%s: Request FW Class", __func__);
-	ret = request_firmware_nowait(THIS_MODULE, FW_ACTION_NOHOTPLUG,
+	ret = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
 			"pip2_firmware_upgrade", dev, GFP_KERNEL, dev,
 			_pt_pip2_firmware_cont);
 	if (ret < 0) {
