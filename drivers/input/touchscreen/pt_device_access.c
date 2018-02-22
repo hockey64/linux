@@ -4456,7 +4456,7 @@ static ssize_t panel_scan_debugfs_read(struct file *filp, char __user *buf,
 	struct pt_core_data *cd = dev_get_drvdata(dev);
 	int status = STATUS_FAIL;
 	u8 config;
-	u16 actual_read_len;
+	u16 num_elem_read;
 	int length = 0;
 	u8 element_size = 0;
 	u8 *buf_out;
@@ -4524,7 +4524,7 @@ static ssize_t panel_scan_debugfs_read(struct file *filp, char __user *buf,
 	/* Set length to max to read all */
 	rc = pt_ret_scan_data_cmd_(dev, 0, 0xFFFF,
 			dad->panel_scan_data_id, dad->ic_buf, &config,
-			&actual_read_len, NULL);
+			&num_elem_read, NULL);
 	if (rc < 0) {
 		pt_debug(dev, DL_ERROR,
 				"%s: Error on retrieve panel scan rc = %d\n",
@@ -4535,17 +4535,19 @@ static ssize_t panel_scan_debugfs_read(struct file *filp, char __user *buf,
 	length = get_unaligned_le16(&dad->ic_buf[0]);
 	buf_offset = dad->ic_buf + length;
 	element_size = config & 0x07;
-	elem_offset = actual_read_len;
-	while (actual_read_len > 0) {
+	elem_offset = num_elem_read;
+	while (num_elem_read > 0) {
 		rc = pt_ret_scan_data_cmd_(dev, elem_offset, 0xFFFF,
 				dad->panel_scan_data_id, NULL, &config,
-				&actual_read_len, buf_offset);
+				&num_elem_read, buf_offset);
 		if (rc < 0)
 			goto resume_scan;
 
-		length += actual_read_len * element_size;
+		length += num_elem_read * element_size;
 		buf_offset = dad->ic_buf + length;
-		elem_offset += actual_read_len;
+		elem_offset += num_elem_read;
+		if (num_elem_read < 0x7A)
+			break;
 	}
 	/* Reconstruct cmd header */
 	put_unaligned_le16(length, &dad->ic_buf[0]);

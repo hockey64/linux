@@ -1994,7 +1994,7 @@ static void pt_fw_and_config_upgrade(
 	if (dut_gen == DUT_PIP2_CAPABLE) {
 		if (!pt_pip2_upgrade_firmware_from_builtin(dev))
 			return;
-		pt_debug(dev, DL_WARN, "%s: Builtin FW upgrade failed",
+		pt_debug(dev, DL_WARN, "%s: Builtin FW upgrade failed\n",
 			__func__);
 	} else {
 		if (!upgrade_firmware_from_builtin(dev))
@@ -2430,8 +2430,8 @@ static void _pt_pip2_firmware_cont(const struct firmware *fw,
 	/* Write the remaining bytes if any remain */
 	if (remain_bytes > 0 && retry_packet == 0) {
 		pt_debug(dev, DL_WARN,
-			"%s: Write last %d bytes to File = 0x%02x\n",
-			__func__, remain_bytes, pip2_data->pip2_file_handle);
+			"Wrote last %d bytes to File = 0x%02x\n",
+			remain_bytes, pip2_data->pip2_file_handle);
 		memcpy(&buf[1], fw_img, remain_bytes);
 		ret = cmd->nonhid_cmd->pip2_send_cmd(dev,
 			PT_CORE_CMD_UNPROTECTED, &pip2_cmd,
@@ -2496,6 +2496,7 @@ static void _pt_pip2_firmware_cont(const struct firmware *fw,
 		pt_debug(dev, DL_WARN,
 			"%s Toggle TP_XRES now...\n", __func__);
 		cmd->request_reset(dev, PT_CORE_CMD_UNPROTECTED);
+		cmd->request_pip2_launch_app(dev, PT_CORE_CMD_UNPROTECTED);
 	}
 
 	/* Wait for FW reset sentinel from reset or execute for up to 500ms */
@@ -2888,6 +2889,7 @@ static ssize_t pt_pip2_flash_erase_store(struct device *dev,
 	if (file_handle != 1 && mode == PT_MODE_OPERATIONAL) {
 		pt_debug(dev, DL_WARN, "%s Requesting RESTART\n", __func__);
 		cmd->request_reset(dev, PT_CORE_CMD_UNPROTECTED);
+		cmd->request_pip2_launch_app(dev, PT_CORE_CMD_UNPROTECTED);
 		cmd->request_restart(dev, true);
 	}
 	cmd->request_start_wd(dev);
@@ -3024,7 +3026,6 @@ static ssize_t pt_pip2_get_last_error_show(struct device *dev,
 	u8 read_buf[256];
 	u8 initial_mode;
 	struct pip2_cmd_structure pip2_cmd;
-	struct pt_core_data *cd = dev_get_drvdata(dev);
 
 	pm_runtime_get_sync(dev);
 
@@ -3038,10 +3039,8 @@ static ssize_t pt_pip2_get_last_error_show(struct device *dev,
 		pt_debug(dev, DL_ERROR, "%s: Failed to enter BL\n", __func__);
 		goto exit_error_show;
 	}
-
-	/* Determine Bootloader PIP version, 2.0 needs special handling */
-	cmd->request_active_pip_prot(dev, PT_CORE_CMD_UNPROTECTED,
-		&(cd->bl_pip_version_major), &(cd->bl_pip_version_minor));
+	pt_debug(dev, DL_INFO, "%s Initial mode before entering BL: %d\n",
+		__func__, initial_mode);
 
 	/* get last error information */
 	rc = cmd->nonhid_cmd->pip2_send_cmd(dev,
@@ -3050,9 +3049,10 @@ static ssize_t pt_pip2_get_last_error_show(struct device *dev,
 		&actual_read_len);
 
 	/* Reset device to get back to running FW if thats how we started */
-	if (initial_mode != PT_MODE_BOOTLOADER) {
+	if (initial_mode == PT_MODE_OPERATIONAL) {
 		pt_debug(dev, DL_WARN, "%s Requesting RESTART\n", __func__);
 		cmd->request_reset(dev, PT_CORE_CMD_UNPROTECTED);
+		cmd->request_pip2_launch_app(dev, PT_CORE_CMD_UNPROTECTED);
 		cmd->request_restart(dev, true);
 		cmd->request_start_wd(dev);
 	}
@@ -3180,7 +3180,8 @@ static int pt_loader_probe(struct device *dev, void **data)
 		ld->pip2_data = pip2_data;
 
 		/* Initialize boot loader status */
-		pip2_bl_status = PIP2_BL_STATUS_IDLE;
+		if (pip2_bl_status != PIP2_BL_STATUS_COMPLETE)
+			pip2_bl_status = PIP2_BL_STATUS_IDLE;
 
 #ifdef CONFIG_TOUCHSCREEN_PARADE_BINARY_FW_UPGRADE
 		rc = device_create_file(dev, &dev_attr_update_fw);

@@ -307,6 +307,7 @@ enum PT_STARTUP_STATUS {
 #define	PT_DRV_DBG_FLUSH_I2C_BUS		204
 #define PT_DRV_DBG_SETUP_PWR                    205
 #define PT_DRV_DBG_GET_PUT_SYNC			206
+#define PT_DRV_DBG_SET_PIP2_LAUNCH_APP		207
 #define PT_DRV_DBG_WD_CORRECTIVE_ACTION		298
 #define PT_DRV_DBG_VIRTUAL_I2C_DUT		299
 #endif /* TTDL DIAGNOSTICS */
@@ -1093,6 +1094,7 @@ struct pt_core_commands {
 	int (*request_exclusive)(struct device *dev, int timeout_ms);
 	int (*release_exclusive)(struct device *dev);
 	int (*request_reset)(struct device *dev, int protect);
+	int (*request_pip2_launch_app)(struct device *dev, int protect);
 	int (*request_restart)(struct device *dev, bool wait);
 	struct pt_sysinfo * (*request_sysinfo)(struct device *dev);
 	struct pt_loader_platform_data
@@ -1221,7 +1223,6 @@ struct pt_core_data {
 	u8 input_buf[PT_MAX_INPUT];
 	u8 response_buf[PT_MAX_INPUT];
 	u8 cmd_rsp_buf[PT_MAX_INPUT];
-	u16 response_buf_len;
 	u16 cmd_rsp_buf_len;
 	u8 raw_cmd_status;
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -1256,6 +1257,7 @@ struct pt_core_data {
 	u8 wd_corrective_action;
 	u8 core_probe_complete;
 	u8 dut_generation;
+	bool pip2_launch_app_on_reset;
 #ifdef TTDL_DIAGNOSTICS
 	u8 t_refresh_active;
 	u16 i2c_crc_error_count;
@@ -1268,6 +1270,7 @@ struct pt_core_data {
 	u32 i2c_transmission_error_count;
 	u32 irq_count;
 	u32 bl_retry_packet_count;
+	u32 file_erase_timeout_count;
 	unsigned long t_refresh_time;
 	u16 err_gpio;
 #endif
